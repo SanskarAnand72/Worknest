@@ -97,6 +97,46 @@ describe('NovaNotes Architecture & State Engine', () => {
       expect(useWorkspaceStore.getState().pages[page.id].isArchived).toBe(false);
       expect(useWorkspaceStore.getState().activePageId).toBe(page.id);
     });
+
+    it('moves pages between parents and reorders them without cyclic loops', async () => {
+      const store = useWorkspaceStore.getState();
+      const parentA = await store.createPage({ title: 'Parent A' });
+      const parentB = await store.createPage({ title: 'Parent B' });
+      const child = await store.createPage({ parentId: parentA.id, title: 'Child Document' });
+
+      expect(useWorkspaceStore.getState().pages[child.id].parentId).toBe(parentA.id);
+
+      // Move child under Parent B
+      await store.movePage(child.id, parentB.id);
+      expect(useWorkspaceStore.getState().pages[child.id].parentId).toBe(parentB.id);
+
+      // Move child back to root
+      await store.movePage(child.id, null);
+      expect(useWorkspaceStore.getState().pages[child.id].parentId).toBeNull();
+
+      // Cyclic protection test: Attempting to move Parent B under Child when Child is nested should be prevented
+      await store.movePage(child.id, parentB.id);
+      await store.movePage(parentB.id, child.id); // Should be a no-op to prevent infinite loop
+      expect(useWorkspaceStore.getState().pages[parentB.id].parentId).toBeNull();
+    });
+
+    it('duplicates pages with rich content and database records', async () => {
+      const store = useWorkspaceStore.getState();
+      const originalPage = await store.createPage({
+        title: 'Original Specs',
+        type: 'doc',
+      });
+      await store.updatePageContent(originalPage.id, {
+        type: 'doc',
+        content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Important project details' }] }],
+      });
+
+      const copy = await store.duplicatePage(originalPage.id);
+      expect(copy).toBeDefined();
+      expect(copy?.title).toBe('Original Specs (Copy)');
+      expect(copy?.id).not.toBe(originalPage.id);
+      expect(copy?.content.content[0].content[0].text).toBe('Important project details');
+    });
   });
 
   describe('Database Engine & Multi-View Consistency', () => {

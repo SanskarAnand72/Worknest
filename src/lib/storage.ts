@@ -56,10 +56,10 @@ export function getDB() {
 // Initial Seed Data
 const DEFAULT_USER: UserProfile = {
   id: 'usr-default',
-  name: 'Alex Rivera',
-  email: 'alex@novanotes.local',
+  name: 'Sanskar Anand',
+  email: 'sanskar@revrecovery.io',
   role: 'owner',
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=128&q=80',
+  avatarUrl: '/avatars/sanskar-anand.jpg',
 };
 
 const DEFAULT_WORKSPACE: Workspace = {
@@ -451,4 +451,9 @@ export async function deletePageFromDB(pageId: string) {
 export async function saveDatabaseToDB(database: Database) {
   const db = await getDB();
   if (db) await db.put('databases', database);
+}
+
+export async function saveCurrentUserToDB(user: UserProfile) {
+  const db = await getDB();
+  if (db) await db.put('preferences', user, 'current_user');
 }

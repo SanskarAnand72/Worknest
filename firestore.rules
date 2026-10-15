@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
+        request.auth.token.workspaceId == workspaceId
+      );
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isAuthenticated() && (
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role in ['owner', 'co-founder', 'co-owner', 'admin']
+      );
+    }
+
+    // System probe / status check
+    match /system/ping {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Workspaces collection
+    match /workspaces/{workspaceId} {
+      allow read: if isWorkspaceMember(workspaceId);
+      allow create: if isAuthenticated();
+      allow update, delete: if isWorkspaceAdmin(workspaceId);
+
+      // Team Members in Workspace
+      match /members/{memberId} {
+        allow read: if isWorkspaceMember(workspaceId);
+        allow write: if isWorkspaceAdmin(workspaceId);
+      }
+
+      // CRM Companies & Contacts
+      match /companies/{companyId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+      match /contacts/{contactId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Pipeline Leads / Deals
+      match /leads/{leadId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Outreach Activities
+      match /activities/{activityId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Clients & Onboarding
+      match /clients/{clientId} {
+        allow read: if isWorkspaceMember(workspaceId);
+        allow create, update: if isWorkspaceMember(workspaceId);
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      // Projects & Milestones
+      match /projects/{projectId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Tasks
+      match /tasks/{taskId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Meetings
+      match /meetings/{meetingId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Proposals & Commercials
+      match /proposals/{proposalId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Custom Operating Modules
+      match /customModules/{moduleId} {
+        allow read: if isWorkspaceMember(workspaceId);
+        allow write: if isWorkspaceAdmin(workspaceId);
+      }
+
+      // Custom Module Records
+      match /customRecords/{recordId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Outreach Sources
+      match /outreachSources/{sourceId} {
+        allow read: if isWorkspaceMember(workspaceId);
+        allow write: if isWorkspaceAdmin(workspaceId);
+      }
+
+      // Pages & Notion-style docs
+      match /pages/{pageId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+    }
+  }
+}

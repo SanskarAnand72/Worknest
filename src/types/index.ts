@@ -6,8 +6,10 @@ export interface UserProfile {
   id: ID;
   email: string;
   name: string;
+  displayName?: string;
+  title?: string;
   avatarUrl?: string;
-  role: 'owner' | 'admin' | 'member' | 'viewer';
+  role: 'owner' | 'co-founder' | 'admin' | 'member' | 'viewer' | 'co-owner';
 }
 
 export interface Workspace {

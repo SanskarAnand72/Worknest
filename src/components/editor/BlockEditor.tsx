@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useRef } from 'react';
-import { useEditor, EditorContent } from '@tiptap/react';
+import { useEditor, EditorContent, BubbleMenu } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
@@ -48,6 +48,10 @@ import {
   FileDown,
   Upload,
   Calculator,
+  GripVertical,
+  Plus,
+  Trash2,
+  Copy,
 } from 'lucide-react';
 
 interface BlockEditorProps {
@@ -62,17 +66,22 @@ interface CommandItem {
 }
 
 export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
-  const { updatePage, updatePageContent } = useWorkspaceStore();
+  const { updatePage, updatePageContent, createPage } = useWorkspaceStore();
   const [title, setTitle] = useState(page.title);
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [slashMenuPos, setSlashMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [hoveredBlockDom, setHoveredBlockDom] = useState<HTMLElement | null>(null);
+  const [gutterPos, setGutterPos] = useState<{ top: number } | null>(null);
+  const [blockMenuOpen, setBlockMenuOpen] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [imageModalOpen, setImageModalOpen] = useState(false);
   const [imageUrl, setImageUrl] = useState('');
   const [isLocked, setIsLocked] = useState(false);
   const slashMenuRef = useRef<HTMLDivElement>(null);
+  const editorContainerRef = useRef<HTMLDivElement>(null);
 
   // Sync internal title with page prop when switched
   useEffect(() => {
@@ -128,10 +137,44 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
     editable: !isLocked,
     editorProps: {
       handleKeyDown: (view, event) => {
+        if (slashMenuOpen) {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            setSelectedIndex((prev) => (prev + 1) % Math.max(1, filteredCommands.length));
+            return true;
+          }
+          if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            setSelectedIndex((prev) => (prev - 1 + Math.max(1, filteredCommands.length)) % Math.max(1, filteredCommands.length));
+            return true;
+          }
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            if (filteredCommands[selectedIndex]) {
+              executeCommand(filteredCommands[selectedIndex]);
+            }
+            return true;
+          }
+          if (event.key === 'Escape') {
+            setSlashMenuOpen(false);
+            return true;
+          }
+        }
+
         if (event.key === '/' && !slashMenuOpen) {
           const { $from } = view.state.selection;
           const isAtStart = $from.parentOffset === 0;
           if (isAtStart || $from.parent.textContent === '') {
+            setTimeout(() => {
+              if (editorContainerRef.current) {
+                const coords = view.coordsAtPos($from.pos);
+                const containerRect = editorContainerRef.current.getBoundingClientRect();
+                setSlashMenuPos({
+                  top: Math.max(0, coords.bottom - containerRect.top + 6),
+                  left: Math.max(0, Math.min(coords.left - containerRect.left, containerRect.width - 320)),
+                });
+              }
+            }, 20);
             setSlashMenuOpen(true);
             setSlashQuery('');
             setSelectedIndex(0);
@@ -149,6 +192,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
         const text = $from.parent.textContent;
         if (text.startsWith('/')) {
           setSlashQuery(text.slice(1).toLowerCase());
+          setSelectedIndex(0);
         } else {
           setSlashMenuOpen(false);
         }
@@ -417,6 +461,27 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
           .run();
       },
     },
+    {
+      title: 'Sub-page',
+      description: 'Embed a new sub-page inside this document.',
+      icon: <FolderOpen className="w-4 h-4 text-blue-500" />,
+      action: async (ed) => {
+        const newChild = await createPage({ parentId: page.id, title: 'Untitled Sub-page', icon: '📄' });
+        ed.chain()
+          .focus()
+          .insertContent({
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                marks: [{ type: 'bold' }],
+                text: `📄 ${newChild.title}`,
+              },
+            ],
+          })
+          .run();
+      },
+    },
   ];
 
   const filteredCommands = commands.filter(
@@ -428,11 +493,100 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
   const executeCommand = (cmd: CommandItem) => {
     if (!editor) return;
     const { $from } = editor.state.selection;
-    const from = $from.start();
-    const to = $from.pos;
-    editor.chain().focus().deleteRange({ from, to }).run();
+    const lineText = $from.parent.textContent;
+    if (lineText.startsWith('/')) {
+      const from = $from.start();
+      const to = $from.pos;
+      editor.chain().focus().deleteRange({ from, to }).run();
+    }
     cmd.action(editor);
     setSlashMenuOpen(false);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!editorContainerRef.current || isLocked) return;
+    const editorEl = editorContainerRef.current;
+    const target = (e.target as HTMLElement).closest('.tiptap > *') as HTMLElement | null;
+    if (target && editorEl.contains(target)) {
+      setHoveredBlockDom(target);
+      const targetRect = target.getBoundingClientRect();
+      const containerRect = editorEl.getBoundingClientRect();
+      setGutterPos({ top: targetRect.top - containerRect.top });
+    }
+  };
+
+  const handleAddBlockBelow = () => {
+    if (!editor) return;
+    try {
+      if (hoveredBlockDom) {
+        const pos = editor.view.posAtDOM(hoveredBlockDom, 0);
+        const $pos = editor.state.doc.resolve(pos);
+        const endOfBlock = $pos.after(1);
+        editor.chain().focus().insertContentAt(endOfBlock, { type: 'paragraph' }).run();
+      } else {
+        editor.chain().focus().insertContent({ type: 'paragraph' }).run();
+      }
+      setTimeout(() => {
+        const { from } = editor.state.selection;
+        const coords = editor.view.coordsAtPos(from);
+        if (editorContainerRef.current) {
+          const containerRect = editorContainerRef.current.getBoundingClientRect();
+          setSlashMenuPos({
+            top: coords.bottom - containerRect.top + 6,
+            left: Math.max(0, coords.left - containerRect.left),
+          });
+        }
+        setSlashMenuOpen(true);
+        setSlashQuery('');
+        setSelectedIndex(0);
+      }, 30);
+    } catch (e) {
+      editor.chain().focus().insertContent({ type: 'paragraph' }).run();
+      setSlashMenuOpen(true);
+    }
+  };
+
+  const handleDeleteCurrentBlock = () => {
+    if (!editor || !hoveredBlockDom) return;
+    try {
+      const pos = editor.view.posAtDOM(hoveredBlockDom, 0);
+      const $pos = editor.state.doc.resolve(pos);
+      const from = $pos.before(1);
+      const to = $pos.after(1);
+      editor.chain().focus().deleteRange({ from, to }).run();
+    } catch (e) {}
+    setBlockMenuOpen(false);
+  };
+
+  const handleDuplicateCurrentBlock = () => {
+    if (!editor || !hoveredBlockDom) return;
+    try {
+      const pos = editor.view.posAtDOM(hoveredBlockDom, 0);
+      const $pos = editor.state.doc.resolve(pos);
+      const node = $pos.node(1);
+      const to = $pos.after(1);
+      if (node) {
+        editor.chain().focus().insertContentAt(to, node.toJSON()).run();
+      }
+    } catch (e) {}
+    setBlockMenuOpen(false);
+  };
+
+  const handleTurnInto = (type: string, attrs?: any) => {
+    if (!editor || !hoveredBlockDom) return;
+    try {
+      const pos = editor.view.posAtDOM(hoveredBlockDom, 0);
+      editor.chain().focus().setTextSelection(pos).run();
+      if (type === 'paragraph') editor.chain().focus().setParagraph().run();
+      else if (type === 'heading') editor.chain().focus().toggleHeading(attrs).run();
+      else if (type === 'taskList') editor.chain().focus().toggleTaskList().run();
+      else if (type === 'bulletList') editor.chain().focus().toggleBulletList().run();
+      else if (type === 'orderedList') editor.chain().focus().toggleOrderedList().run();
+      else if (type === 'callout') editor.chain().focus().toggleCallout().run();
+      else if (type === 'quote') editor.chain().focus().toggleBlockquote().run();
+      else if (type === 'codeBlock') editor.chain().focus().toggleCodeBlock().run();
+    } catch (e) {}
+    setBlockMenuOpen(false);
   };
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -495,28 +649,7 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
   return (
     <div className="relative w-full max-w-4xl mx-auto px-8 md:px-16 pt-4 pb-32">
       {/* Top Page Utility Bar */}
-      <div className="flex items-center justify-between mb-3 text-xs text-muted-foreground opacity-80 hover:opacity-100 transition-opacity">
-        <div className="flex items-center gap-2">
-          {!page.icon && (
-            <button
-              onClick={() => handleIconSelect('📝')}
-              className="flex items-center gap-1 hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors"
-            >
-              <Smile className="w-3.5 h-3.5" />
-              Add icon
-            </button>
-          )}
-          {!page.coverImage && (
-            <button
-              onClick={handleAddCover}
-              className="flex items-center gap-1 hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors"
-            >
-              <ImageIcon className="w-3.5 h-3.5" />
-              Add cover
-            </button>
-          )}
-        </div>
-
+      <div className="flex items-center justify-end mb-3 text-xs text-muted-foreground opacity-80 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2">
           <button
             onClick={() => setIsLocked(!isLocked)}
@@ -613,6 +746,17 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
         value={title}
         disabled={isLocked}
         onChange={handleTitleChange}
+        onFocus={(e) => {
+          if (e.target.value === 'Untitled') {
+            e.target.select();
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            editor?.commands.focus('start');
+          }
+        }}
         placeholder="Untitled"
         className="w-full text-4xl md:text-5xl font-bold bg-transparent border-none outline-none placeholder:text-muted-foreground/30 mb-4 text-foreground tracking-tight"
       />
@@ -620,71 +764,129 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
       {/* Page Discussion & Comments */}
       <PageComments page={page} />
 
-      {/* Bubble Formatting Toolbar */}
+      {/* Floating Bubble Formatting Toolbar (Only on text selection) */}
       {editor && !isLocked && (
-        <div className="sticky top-2 z-10 mb-4 flex flex-wrap items-center gap-1 bg-card/95 backdrop-blur-md border border-border shadow-sm rounded-lg p-1 w-fit">
+        <BubbleMenu
+          editor={editor}
+          tippyOptions={{ duration: 120, zIndex: 40 }}
+          shouldShow={({ editor, view, state, from, to }) => {
+            return from !== to && !editor.isActive('image');
+          }}
+          className="flex items-center gap-0.5 bg-card/95 backdrop-blur-md border border-border shadow-xl rounded-lg p-1 text-xs z-40 animate-in fade-in-50 zoom-in-95 duration-150"
+        >
+          {/* Turn into buttons */}
+          <div className="flex items-center border-r border-border/60 pr-1 mr-1 gap-0.5">
+            <button
+              onClick={() => editor.chain().focus().setParagraph().run()}
+              className={`px-1.5 py-1 rounded text-xs hover:bg-muted ${editor.isActive('paragraph') ? 'font-semibold text-accent' : 'text-muted-foreground'}`}
+              title="Text"
+            >
+              Text
+            </button>
+            <button
+              onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+              className={`p-1 rounded hover:bg-muted ${editor.isActive('heading', { level: 1 }) ? 'bg-muted text-accent font-bold' : 'text-muted-foreground'}`}
+              title="Heading 1"
+            >
+              <Heading1 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+              className={`p-1 rounded hover:bg-muted ${editor.isActive('heading', { level: 2 }) ? 'bg-muted text-accent font-bold' : 'text-muted-foreground'}`}
+              title="Heading 2"
+            >
+              <Heading2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+              className={`p-1 rounded hover:bg-muted ${editor.isActive('heading', { level: 3 }) ? 'bg-muted text-accent font-bold' : 'text-muted-foreground'}`}
+              title="Heading 3"
+            >
+              <Heading3 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => editor.chain().focus().toggleTaskList().run()}
+              className={`p-1 rounded hover:bg-muted ${editor.isActive('taskList') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
+              title="To-do list"
+            >
+              <CheckSquare className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => editor.chain().focus().toggleBulletList().run()}
+              className={`p-1 rounded hover:bg-muted ${editor.isActive('bulletList') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
+              title="Bullet list"
+            >
+              <List className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Formatting buttons */}
           <button
             onClick={() => editor.chain().focus().toggleBold().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('bold') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Bold"
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('bold') ? 'bg-muted text-accent font-bold' : 'text-muted-foreground'}`}
+            title="Bold (Ctrl+B)"
           >
-            <Bold className="w-4 h-4" />
+            <Bold className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => editor.chain().focus().toggleItalic().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('italic') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Italic"
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('italic') ? 'bg-muted text-accent italic' : 'text-muted-foreground'}`}
+            title="Italic (Ctrl+I)"
           >
-            <Italic className="w-4 h-4" />
+            <Italic className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => editor.chain().focus().toggleUnderline().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('underline') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Underline"
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('underline') ? 'bg-muted text-accent underline' : 'text-muted-foreground'}`}
+            title="Underline (Ctrl+U)"
           >
-            <UnderlineIcon className="w-4 h-4" />
+            <UnderlineIcon className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => editor.chain().focus().toggleStrike().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('strike') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('strike') ? 'bg-muted text-accent line-through' : 'text-muted-foreground'}`}
             title="Strikethrough"
           >
-            <Strikethrough className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => editor.chain().focus().toggleHighlight().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('highlight') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Highlight"
-          >
-            <Highlighter className="w-4 h-4" />
+            <Strikethrough className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => editor.chain().focus().toggleCode().run()}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('code') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Inline Code"
+            className={`p-1.5 rounded hover:bg-muted font-mono ${editor.isActive('code') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
+            title="Inline Code (Ctrl+E)"
           >
-            <Code className="w-4 h-4" />
+            <Code className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().toggleHighlight().run()}
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('highlight') ? 'bg-yellow-200 text-yellow-900 dark:bg-yellow-900 dark:text-yellow-100' : 'text-muted-foreground'}`}
+            title="Highlight"
+          >
+            <Highlighter className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => {
               setLinkUrl(editor.getAttributes('link').href || '');
               setLinkInputOpen(!linkInputOpen);
             }}
-            className={`p-1.5 rounded hover:bg-muted transition-colors ${editor.isActive('link') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
-            title="Hyperlink"
+            className={`p-1.5 rounded hover:bg-muted ${editor.isActive('link') ? 'bg-muted text-accent' : 'text-muted-foreground'}`}
+            title="Link (Ctrl+K)"
           >
-            <LinkIcon className="w-4 h-4" />
+            <LinkIcon className="w-3.5 h-3.5" />
           </button>
 
-          {/* Link URL inline input */}
           {linkInputOpen && (
-            <div className="flex items-center gap-1 pl-2 pr-1 py-0.5 bg-background border border-border rounded-md">
+            <div className="flex items-center gap-1 pl-2 pr-1 py-0.5 bg-background border border-border rounded-md shadow-sm ml-1">
               <input
                 type="text"
                 value={linkUrl}
                 onChange={(e) => setLinkUrl(e.target.value)}
                 placeholder="https://..."
                 className="text-xs bg-transparent outline-none w-36 text-foreground"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleSetLink();
+                  if (e.key === 'Escape') setLinkInputOpen(false);
+                }}
               />
               <button
                 onClick={handleSetLink}
@@ -694,18 +896,146 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
               </button>
             </div>
           )}
-        </div>
+        </BubbleMenu>
       )}
 
-      {/* TipTap Editor Content */}
-      <div className="relative min-h-[350px]">
+      {/* TipTap Editor Content with Notion Block Gutter */}
+      <div
+        ref={editorContainerRef}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => {
+          if (!blockMenuOpen) {
+            setGutterPos(null);
+          }
+        }}
+        className="relative min-h-[350px] pl-2"
+      >
+        {/* Left Notion Block Hover Gutter Handle */}
+        {gutterPos && !isLocked && (
+          <div
+            style={{ top: `${gutterPos.top}px`, transform: 'translateY(1px)' }}
+            className="absolute -left-12 flex items-center gap-0.5 z-20 group/gutter transition-opacity"
+          >
+            <button
+              onClick={handleAddBlockBelow}
+              className="p-1 rounded hover:bg-muted text-muted-foreground/60 hover:text-foreground transition-colors"
+              title="Click to add block below"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setBlockMenuOpen(!blockMenuOpen)}
+              className="p-1 rounded hover:bg-muted text-muted-foreground/60 hover:text-foreground cursor-grab transition-colors"
+              title="Click for block menu, drag to move"
+            >
+              <GripVertical className="w-3.5 h-3.5" />
+            </button>
+
+            {/* Block Context / Turn Into Menu */}
+            {blockMenuOpen && (
+              <div
+                className="absolute left-10 top-0 w-52 bg-card border border-border rounded-xl shadow-xl z-50 p-1 text-xs animate-in fade-in-50 zoom-in-95 duration-100"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                  Turn into
+                </div>
+                <button
+                  onClick={() => handleTurnInto('paragraph')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Type className="w-3.5 h-3.5 text-zinc-500" />
+                  Text
+                </button>
+                <button
+                  onClick={() => handleTurnInto('heading', { level: 1 })}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Heading1 className="w-3.5 h-3.5 text-zinc-500" />
+                  Heading 1
+                </button>
+                <button
+                  onClick={() => handleTurnInto('heading', { level: 2 })}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Heading2 className="w-3.5 h-3.5 text-zinc-500" />
+                  Heading 2
+                </button>
+                <button
+                  onClick={() => handleTurnInto('heading', { level: 3 })}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Heading3 className="w-3.5 h-3.5 text-zinc-500" />
+                  Heading 3
+                </button>
+                <button
+                  onClick={() => handleTurnInto('taskList')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <CheckSquare className="w-3.5 h-3.5 text-emerald-500" />
+                  To-do list
+                </button>
+                <button
+                  onClick={() => handleTurnInto('bulletList')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <List className="w-3.5 h-3.5 text-zinc-500" />
+                  Bulleted list
+                </button>
+                <button
+                  onClick={() => handleTurnInto('callout')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  Callout
+                </button>
+                <button
+                  onClick={() => handleTurnInto('quote')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Quote className="w-3.5 h-3.5 text-rose-500" />
+                  Quote
+                </button>
+                <button
+                  onClick={() => handleTurnInto('codeBlock')}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Code className="w-3.5 h-3.5 text-indigo-500" />
+                  Code block
+                </button>
+
+                <div className="h-px bg-border my-1" />
+
+                <button
+                  onClick={handleDuplicateCurrentBlock}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-muted rounded text-left"
+                >
+                  <Copy className="w-3.5 h-3.5 text-zinc-500" />
+                  Duplicate
+                </button>
+                <button
+                  onClick={handleDeleteCurrentBlock}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-950 text-red-500 rounded text-left"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <EditorContent editor={editor} />
 
-        {/* Floating Slash Command Menu */}
+        {/* Floating Slash Command Menu (Positioned directly below cursor) */}
         {slashMenuOpen && filteredCommands.length > 0 && (
           <div
             ref={slashMenuRef}
-            className="absolute left-0 mt-2 w-72 max-h-80 overflow-y-auto bg-card border border-border rounded-xl shadow-xl z-30 p-1.5 animate-in fade-in-50 zoom-in-95 duration-100"
+            style={{
+              top: `${slashMenuPos.top}px`,
+              left: `${slashMenuPos.left}px`,
+            }}
+            className="absolute w-72 max-h-80 overflow-y-auto bg-card border border-border rounded-xl shadow-2xl z-40 p-1.5 animate-in fade-in-50 zoom-in-95 duration-100"
           >
             <div className="px-2 py-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
               Basic & Advanced Blocks

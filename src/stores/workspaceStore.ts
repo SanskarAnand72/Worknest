@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Page, Workspace, Database, SaveStatus, UserProfile, DatabaseRecord, DatabaseProperty, DatabaseView } from '@/types';
-import { fetchAllStorageData, savePageToDB, saveDatabaseToDB, deletePageFromDB, saveWorkspaceToDB } from '@/lib/storage';
+import { fetchAllStorageData, savePageToDB, saveDatabaseToDB, deletePageFromDB, saveWorkspaceToDB, saveCurrentUserToDB } from '@/lib/storage';
 import { generateId } from '@/lib/utils';
 
 interface WorkspaceState {
@@ -18,6 +18,7 @@ interface WorkspaceState {
 
   // Actions
   init: () => Promise<void>;
+  updateCurrentUser: (updates: Partial<UserProfile>) => Promise<void>;
   setTheme: (theme: 'light' | 'dark') => void;
   toggleTheme: () => void;
   setSearchOpen: (open: boolean) => void;
@@ -37,6 +38,7 @@ interface WorkspaceState {
   restorePage: (pageId: string) => Promise<void>;
   deletePagePermanently: (pageId: string) => Promise<void>;
   duplicatePage: (pageId: string) => Promise<Page | null>;
+  movePage: (pageId: string, newParentId: string | null, targetIndex?: number) => Promise<void>;
 
   // Database Actions
   updateDatabase: (db: Database) => Promise<void>;
@@ -104,6 +106,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       console.error('Failed to init storage', err);
       set({ isInitialized: true, saveStatus: 'error' });
     }
+  },
+
+  updateCurrentUser: async (updates) => {
+    const current = get().currentUser || {
+      id: 'team-sanskar',
+      name: 'Sanskar Anand',
+      email: 'sanskar@revrecovery.io',
+      role: 'owner',
+      avatarUrl: '/avatars/sanskar-anand.jpg',
+    };
+    const updated = { ...current, ...updates };
+    set({ currentUser: updated });
+    await saveCurrentUserToDB(updated);
   },
 
   setTheme: (theme) => {
@@ -357,6 +372,42 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     set({ saveStatus: 'saved' });
     return duplicatedPage;
+  },
+
+  movePage: async (pageId: string, newParentId: string | null, targetIndex?: number) => {
+    const page = get().pages[pageId];
+    if (!page) return;
+
+    // Prevent cyclic parentage
+    let curr = newParentId;
+    while (curr) {
+      if (curr === pageId) return;
+      curr = get().pages[curr]?.parentId || null;
+    }
+
+    const siblings = Object.values(get().pages)
+      .filter((p) => p.parentId === newParentId && p.id !== pageId && !p.isArchived)
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+    let order = siblings.length;
+    if (typeof targetIndex === 'number') {
+      order = targetIndex;
+    }
+
+    const updatedPage: Page = {
+      ...page,
+      parentId: newParentId,
+      order,
+      updatedAt: Date.now(),
+    };
+
+    set({
+      pages: { ...get().pages, [pageId]: updatedPage },
+      saveStatus: 'saving',
+    });
+
+    await savePageToDB(updatedPage);
+    set({ saveStatus: 'saved' });
   },
 
   updateDatabase: async (db) => {
