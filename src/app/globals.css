@@ -1,0 +1,202 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #22252a;
+    --sidebar: #fbfbfa;
+    --sidebar-foreground: #37352f;
+    --sidebar-border: #edece9;
+    --sidebar-accent: #efefee;
+    --sidebar-accent-foreground: #1c1c1a;
+    --muted: #f4f4f2;
+    --muted-foreground: #787774;
+    --border: #e6e5e3;
+    --accent: #2e75d3;
+    --accent-foreground: #ffffff;
+    --card: #ffffff;
+    --card-foreground: #22252a;
+    --radius: 8px;
+
+    /* Highlight backgrounds */
+    --color-highlight-yellow: #fff3c4;
+    --color-highlight-blue: #d3e5ff;
+    --color-highlight-green: #d3f9d8;
+    --color-highlight-pink: #ffd6e0;
+    --color-highlight-purple: #ebd4f7;
+    --color-highlight-orange: #ffe3c2;
+    --color-highlight-red: #ffd5cc;
+    --color-highlight-gray: #e9e9e7;
+  }
+
+  .dark {
+    --background: #191919;
+    --foreground: #e3e2de;
+    --sidebar: #202020;
+    --sidebar-foreground: #c5c4bf;
+    --sidebar-border: #2a2a29;
+    --sidebar-accent: #2c2c2b;
+    --sidebar-accent-foreground: #f0efe9;
+    --muted: #242423;
+    --muted-foreground: #8a8984;
+    --border: #2e2e2d;
+    --accent: #3b82f6;
+    --accent-foreground: #ffffff;
+    --card: #202020;
+    --card-foreground: #e3e2de;
+
+    /* Dark Highlight backgrounds */
+    --color-highlight-yellow: #43391b;
+    --color-highlight-blue: #1c365b;
+    --color-highlight-green: #1f4228;
+    --color-highlight-pink: #4b1d2d;
+    --color-highlight-purple: #3a1e4d;
+    --color-highlight-orange: #4a2d18;
+    --color-highlight-red: #4d211d;
+    --color-highlight-gray: #30302e;
+  }
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 119, 116, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 119, 116, 0.45);
+}
+
+/* TipTap Editor Styles */
+.tiptap {
+  outline: none;
+  min-height: 240px;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  color: var(--muted-foreground);
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+.tiptap h1 {
+  font-size: 2.1rem;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.02em;
+}
+
+.tiptap h2 {
+  font-size: 1.6rem;
+  font-weight: 650;
+  line-height: 1.3;
+  margin-top: 1.25rem;
+  margin-bottom: 0.4rem;
+  letter-spacing: -0.015em;
+}
+
+.tiptap h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin-top: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.tiptap p {
+  line-height: 1.65;
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding: 0;
+  margin: 0.4rem 0;
+}
+
+.tiptap ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.tiptap ul[data-type="taskList"] li > label {
+  user-select: none;
+  margin-top: 0.25rem;
+}
+
+.tiptap ul[data-type="taskList"] li > label input[type="checkbox"] {
+  cursor: pointer;
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.tiptap ul[data-type="taskList"] li[data-checked="true"] > div {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.tiptap blockquote {
+  border-left: 3px solid var(--foreground);
+  padding-left: 1rem;
+  margin: 0.75rem 0;
+  font-style: italic;
+  opacity: 0.9;
+}
+
+.tiptap pre {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.85rem 1.1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+
+.tiptap hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
+}
+
+.tiptap mark {
+  background-color: var(--color-highlight-yellow);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0.1em 0.2em;
+}
+
+.tiptap code {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.85em;
+  padding: 0.15em 0.35em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
