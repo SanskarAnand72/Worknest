@@ -21,6 +21,9 @@ import {
   Sparkles,
   Settings,
   Archive,
+  Copy,
+  Link as LinkIcon,
+  Check,
 } from 'lucide-react';
 import { TemplatesModal } from '@/components/modals/TemplatesModal';
 import { SettingsModal } from '@/components/modals/SettingsModal';
@@ -37,12 +40,14 @@ export const Sidebar: React.FC = () => {
     archivePage,
     restorePage,
     deletePagePermanently,
+    duplicatePage,
     theme,
     toggleTheme,
     setSearchOpen,
     currentUser,
     sidebarOpen,
   } = useWorkspaceStore();
+  const [copiedPageId, setCopiedPageId] = useState<string | null>(null);
 
   const [expandedPages, setExpandedPages] = useState<Record<string, boolean>>({
     'page-welcome': true,
@@ -150,6 +155,35 @@ export const Sidebar: React.FC = () => {
                 <Star className={`w-3.5 h-3.5 ${page.isFavorite ? 'text-amber-500 fill-amber-500' : ''}`} />
                 {page.isFavorite ? 'Remove from favorites' : 'Add to favorites'}
               </button>
+              <button
+                onClick={async () => {
+                  await duplicatePage(page.id);
+                  setMenuOpenPageId(null);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-muted text-left"
+              >
+                <Copy className="w-3.5 h-3.5 text-zinc-500" />
+                Duplicate page
+              </button>
+              <button
+                onClick={() => {
+                  if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                    navigator.clipboard.writeText(window.location.origin + `?page=${page.id}`);
+                    setCopiedPageId(page.id);
+                    setTimeout(() => setCopiedPageId(null), 2000);
+                  }
+                  setMenuOpenPageId(null);
+                }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-muted text-left"
+              >
+                {copiedPageId === page.id ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-500" />
+                ) : (
+                  <LinkIcon className="w-3.5 h-3.5 text-zinc-500" />
+                )}
+                {copiedPageId === page.id ? 'Link copied!' : 'Copy link'}
+              </button>
+              <div className="h-px bg-border my-1" />
               <button
                 onClick={() => {
                   archivePage(page.id);

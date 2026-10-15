@@ -47,6 +47,7 @@ import {
   Unlock,
   FileDown,
   Upload,
+  Calculator,
 } from 'lucide-react';
 
 interface BlockEditorProps {
@@ -388,6 +389,34 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
           .run();
       },
     },
+    {
+      title: 'Math Equation',
+      description: 'Display formatted mathematical expressions with LaTeX syntax.',
+      icon: <Calculator className="w-4 h-4 text-emerald-500" />,
+      action: (ed) => {
+        const formula = prompt('Enter mathematical formula (e.g. f(x) = a x^2 + b x + c):', 'f(x) = a x^2 + b x + c');
+        if (!formula) return;
+        ed.chain()
+          .focus()
+          .insertContent({
+            type: 'callout',
+            attrs: { icon: '∑' },
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    marks: [{ type: 'code' }],
+                    text: formula,
+                  },
+                ],
+              },
+            ],
+          })
+          .run();
+      },
+    },
   ];
 
   const filteredCommands = commands.filter(
@@ -529,6 +558,28 @@ export const BlockEditor: React.FC<BlockEditorProps> = ({ page }) => {
           </div>
         </div>
       )}
+
+      {/* Hover action bar above page title */}
+      <div className="flex items-center gap-2 mb-2 opacity-60 hover:opacity-100 transition-opacity text-xs text-muted-foreground">
+        {!page.icon && (
+          <button
+            onClick={() => handleIconSelect('📄')}
+            className="flex items-center gap-1 hover:text-foreground hover:bg-muted px-2 py-0.5 rounded transition-colors"
+          >
+            <Smile className="w-3.5 h-3.5" />
+            <span>Add icon</span>
+          </button>
+        )}
+        {!page.coverImage && (
+          <button
+            onClick={handleAddCover}
+            className="flex items-center gap-1 hover:text-foreground hover:bg-muted px-2 py-0.5 rounded transition-colors"
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            <span>Add cover</span>
+          </button>
+        )}
+      </div>
 
       {/* Page Icon */}
       {page.icon && (

@@ -35,8 +35,10 @@ import {
   Mail,
   Phone,
   Layers,
+  ExternalLink,
 } from 'lucide-react';
 import { generateId, formatDate } from '@/lib/utils';
+import { RecordModal } from './RecordModal';
 
 interface DatabaseViewProps {
   database: Database;
@@ -67,6 +69,18 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
   const [selectedRollupRelationId, setSelectedRollupRelationId] = useState<string>('');
   const [selectedRollupPropertyId, setSelectedRollupPropertyId] = useState<string>('');
   const [selectedRollupFunction, setSelectedRollupFunction] = useState<RollupFunction>('count');
+
+  // Record Peek Modal State
+  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
+
+  // Advanced Multi-Property Filter State
+  const [filterBarOpen, setFilterBarOpen] = useState(false);
+  const [customFilters, setCustomFilters] = useState<
+    { id: string; propertyId: string; operator: string; value: any }[]
+  >([]);
+  const [newFilterPropId, setNewFilterPropId] = useState<string>('');
+  const [newFilterOp, setNewFilterOp] = useState<string>('contains');
+  const [newFilterVal, setNewFilterVal] = useState<string>('');
 
   // Interactive Relation Picker Popover State
   const [relationPickerRecordId, setRelationPickerRecordId] = useState<string | null>(null);
@@ -117,10 +131,10 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
       rollupPropertyId: newPropType === 'rollup' ? selectedRollupPropertyId : undefined,
       rollupFunction: newPropType === 'rollup' ? selectedRollupFunction : undefined,
       options:
-        newPropType === 'select' || newPropType === 'status'
+        newPropType === 'select' || newPropType === 'status' || newPropType === 'multi_select'
           ? [
               { id: generateId(), name: 'Option 1', color: 'bg-blue-100 text-blue-800' },
-              { id: generateId(), name: 'Option 2', color: 'bg-zinc-200 text-zinc-800' },
+              { id: generateId(), name: 'Option 2', color: 'bg-emerald-100 text-emerald-800' },
             ]
           : undefined,
     };
@@ -160,6 +174,47 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
 
   if (filterStatus !== 'all' && statusProp) {
     processedRecords = processedRecords.filter((rec) => rec.values[statusProp.id] === filterStatus);
+  }
+
+  // Advanced Custom Multi-Property Filters
+  if (customFilters.length > 0) {
+    processedRecords = processedRecords.filter((rec) => {
+      return customFilters.every((f) => {
+        const val = rec.values[f.propertyId];
+        const prop = database.properties.find((p) => p.id === f.propertyId);
+        if (!prop) return true;
+
+        if (f.operator === 'is_empty') return val === undefined || val === null || val === '';
+        if (f.operator === 'is_not_empty') return val !== undefined && val !== null && val !== '';
+        if (f.operator === 'is_checked') return !!val;
+        if (f.operator === 'is_unchecked') return !val;
+
+        if (prop.type === 'number') {
+          const numVal = Number(val);
+          const filterNum = Number(f.value);
+          if (f.operator === 'gt') return numVal > filterNum;
+          if (f.operator === 'lt') return numVal < filterNum;
+          if (f.operator === 'equals') return numVal === filterNum;
+          if (f.operator === 'not_equals') return numVal !== filterNum;
+        }
+
+        if (prop.type === 'multi_select') {
+          const arr: string[] = Array.isArray(val) ? val : [];
+          if (f.operator === 'contains') return arr.some((item) => String(item).toLowerCase().includes(String(f.value).toLowerCase()));
+          if (f.operator === 'does_not_contain') return !arr.some((item) => String(item).toLowerCase().includes(String(f.value).toLowerCase()));
+        }
+
+        const strVal = String(val ?? '').toLowerCase();
+        const strFilter = String(f.value ?? '').toLowerCase();
+
+        if (f.operator === 'contains') return strVal.includes(strFilter);
+        if (f.operator === 'does_not_contain') return !strVal.includes(strFilter);
+        if (f.operator === 'equals') return strVal === strFilter;
+        if (f.operator === 'not_equals') return strVal !== strFilter;
+
+        return true;
+      });
+    });
   }
 
   if (sortField) {
@@ -373,6 +428,24 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
             />
           </div>
 
+          {/* Advanced Filter Button */}
+          <button
+            onClick={() => setFilterBarOpen(!filterBarOpen)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition-colors ${
+              customFilters.length > 0 || filterBarOpen
+                ? 'bg-accent/15 text-accent border-accent/40'
+                : 'bg-muted/60 border-border text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Filter className="w-3 h-3" />
+            <span>Filter</span>
+            {customFilters.length > 0 && (
+              <span className="w-4 h-4 rounded-full bg-accent text-accent-foreground text-[10px] flex items-center justify-center font-bold">
+                {customFilters.length}
+              </span>
+            )}
+          </button>
+
           {/* Add Property Button */}
           <button
             onClick={() => setAddPropOpen(true)}
@@ -384,6 +457,112 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
           </button>
         </div>
       </div>
+
+      {/* EXPANDABLE MULTI-PROPERTY FILTER BAR */}
+      {(filterBarOpen || customFilters.length > 0) && (
+        <div className="mb-3 p-2.5 bg-card border border-border rounded-xl shadow-sm text-xs space-y-2">
+          {/* Active Filter Chips */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-muted-foreground font-semibold uppercase text-[10px] tracking-wider px-1">
+              Active Filters:
+            </span>
+            {customFilters.map((f) => {
+              const prop = database.properties.find((p) => p.id === f.propertyId);
+              return (
+                <span
+                  key={f.id}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent/10 border border-accent/20 text-accent font-medium text-xs"
+                >
+                  <span>
+                    <strong>{prop?.name || 'Property'}</strong> {f.operator.replace(/_/g, ' ')}{' '}
+                    {f.value !== undefined && f.value !== '' ? `"${f.value}"` : ''}
+                  </span>
+                  <button
+                    onClick={() => setCustomFilters(customFilters.filter((item) => item.id !== f.id))}
+                    className="hover:opacity-75 font-bold ml-0.5"
+                  >
+                    ×
+                  </button>
+                </span>
+              );
+            })}
+
+            {customFilters.length > 0 && (
+              <button
+                onClick={() => setCustomFilters([])}
+                className="text-[11px] text-muted-foreground hover:text-red-500 underline px-1 ml-1"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+
+          {/* Add Filter Form */}
+          {filterBarOpen && (
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border/40">
+              <span className="text-muted-foreground text-[11px]">+ Where</span>
+              <select
+                value={newFilterPropId || database.properties[0]?.id || ''}
+                onChange={(e) => setNewFilterPropId(e.target.value)}
+                className="px-2 py-1 rounded bg-muted border border-border text-foreground text-xs outline-none"
+              >
+                {database.properties.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={newFilterOp}
+                onChange={(e) => setNewFilterOp(e.target.value)}
+                className="px-2 py-1 rounded bg-muted border border-border text-foreground text-xs outline-none"
+              >
+                <option value="contains">contains</option>
+                <option value="does_not_contain">does not contain</option>
+                <option value="equals">equals</option>
+                <option value="not_equals">does not equal</option>
+                <option value="gt">greater than (&gt;)</option>
+                <option value="lt">less than (&lt;)</option>
+                <option value="is_checked">is checked</option>
+                <option value="is_unchecked">is unchecked</option>
+                <option value="is_empty">is empty</option>
+                <option value="is_not_empty">is not empty</option>
+              </select>
+
+              {!['is_empty', 'is_not_empty', 'is_checked', 'is_unchecked'].includes(newFilterOp) && (
+                <input
+                  type="text"
+                  value={newFilterVal}
+                  onChange={(e) => setNewFilterVal(e.target.value)}
+                  placeholder="Value..."
+                  className="px-2 py-1 rounded bg-muted border border-border text-foreground text-xs outline-none w-32 md:w-44"
+                />
+              )}
+
+              <button
+                onClick={() => {
+                  const targetPropId = newFilterPropId || database.properties[0]?.id;
+                  if (!targetPropId) return;
+                  setCustomFilters([
+                    ...customFilters,
+                    {
+                      id: `filter-${Date.now()}`,
+                      propertyId: targetPropId,
+                      operator: newFilterOp,
+                      value: newFilterVal,
+                    },
+                  ]);
+                  setNewFilterVal('');
+                }}
+                className="px-3 py-1 rounded bg-accent text-accent-foreground font-medium text-xs hover:opacity-90"
+              >
+                Add Filter
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Add Property Modal */}
       {addPropOpen && (
@@ -415,7 +594,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
                 >
                   <option value="text">Text</option>
                   <option value="number">Number</option>
-                  <option value="select">Select</option>
+                  <option value="select">Select (Single Tag)</option>
+                  <option value="multi_select">Multi-Select (Multiple Tags)</option>
                   <option value="status">Status</option>
                   <option value="date">Date</option>
                   <option value="checkbox">Checkbox</option>
@@ -426,6 +606,8 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
                   <option value="formula">Formula (Computed)</option>
                   <option value="relation">Relation (Linked Database)</option>
                   <option value="rollup">Rollup (Aggregate)</option>
+                  <option value="created_time">Created Time (Auto)</option>
+                  <option value="last_edited_time">Last Edited Time (Auto)</option>
                 </select>
               </div>
 
@@ -575,7 +757,25 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
                     <td className="py-2 px-3 text-center text-muted-foreground">{index + 1}</td>
                     {database.properties.map((prop) => (
                       <td key={prop.id} className="py-1.5 px-3 border-r border-border/30 last:border-r-0">
-                        {prop.type === 'title' || prop.type === 'text' || prop.type === 'person' ? (
+                        {prop.type === 'title' ? (
+                          <div className="flex items-center justify-between gap-1 w-full group/title">
+                            <input
+                              type="text"
+                              value={record.values[prop.id] || ''}
+                              onChange={(e) =>
+                                updateDatabaseRecord(database.id, record.id, { [prop.id]: e.target.value })
+                              }
+                              className="flex-1 bg-transparent outline-none focus:bg-muted/50 rounded px-1.5 py-1 text-foreground font-medium"
+                            />
+                            <button
+                              onClick={() => setSelectedRecordId(record.id)}
+                              className="opacity-0 group-hover/title:opacity-100 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded text-[10px] font-semibold text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 flex items-center gap-0.5 border border-border"
+                              title="Open record peek"
+                            >
+                              <span>OPEN</span>
+                            </button>
+                          </div>
+                        ) : prop.type === 'text' || prop.type === 'person' ? (
                           <input
                             type="text"
                             value={record.values[prop.id] || ''}
@@ -747,6 +947,33 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
                               </a>
                             )}
                           </div>
+                        ) : prop.type === 'multi_select' ? (
+                          <div
+                            onClick={() => setSelectedRecordId(record.id)}
+                            className="flex flex-wrap items-center gap-1 cursor-pointer py-1 min-h-[28px]"
+                            title="Click to view/edit tags in record peek"
+                          >
+                            {Array.isArray(record.values[prop.id]) && record.values[prop.id].length > 0 ? (
+                              record.values[prop.id].map((tag: string) => (
+                                <span
+                                  key={tag}
+                                  className="px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300"
+                                >
+                                  {tag}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-muted-foreground/40 text-[10px]">+ Add tags</span>
+                            )}
+                          </div>
+                        ) : prop.type === 'created_time' ? (
+                          <span className="text-muted-foreground text-[11px] font-mono">
+                            {formatDate(record.createdAt)}
+                          </span>
+                        ) : prop.type === 'last_edited_time' ? (
+                          <span className="text-muted-foreground text-[11px] font-mono">
+                            {formatDate(record.updatedAt)}
+                          </span>
                         ) : (
                           <span className="text-muted-foreground">{record.values[prop.id]}</span>
                         )}
@@ -1244,6 +1471,22 @@ export const DatabaseView: React.FC<DatabaseViewProps> = ({ database }) => {
             })()}
           </div>
         </div>
+      )}
+
+      {/* 7. RECORD PEEK / DETAIL MODAL */}
+      {selectedRecordId && (
+        <RecordModal
+          database={database}
+          recordId={selectedRecordId}
+          onClose={() => setSelectedRecordId(null)}
+          onUpdateRecord={(recId, vals) => updateDatabaseRecord(database.id, recId, vals)}
+          onDeleteRecord={(recId) => deleteDatabaseRecord(database.id, recId)}
+          onDuplicateRecord={(rec) => handleDuplicateRecord(rec)}
+          onOpenRelationPicker={(recId, propId) => {
+            setRelationPickerRecordId(recId);
+            setRelationPickerPropId(propId);
+          }}
+        />
       )}
     </div>
   );

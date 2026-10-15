@@ -251,5 +251,51 @@ describe('NovaNotes Architecture & State Engine', () => {
       expect(useWorkspaceStore.getState().saveStatus).toBe('saving');
       expect(useWorkspaceStore.getState().pages[page.id].content).toEqual(tipTapDoc);
     });
+
+    it('duplicates pages and associated databases', async () => {
+      const store = useWorkspaceStore.getState();
+      const page = await store.createPage({ title: 'Sprint Roadmap', icon: '🎯', type: 'database' });
+      await store.toggleFavorite(page.id);
+
+      const duplicated = await store.duplicatePage(page.id);
+      expect(duplicated).toBeDefined();
+      expect(duplicated?.title).toBe('Sprint Roadmap (Copy)');
+      expect(duplicated?.icon).toBe('🎯');
+      expect(duplicated?.isFavorite).toBe(false);
+      expect(duplicated?.id).not.toBe(page.id);
+      expect(useWorkspaceStore.getState().pages[duplicated!.id]).toBeDefined();
+    });
+  });
+
+  describe('Multi-Select & Record Detail Properties', () => {
+    it('supports multi_select array values and auto-computed properties', async () => {
+      const store = useWorkspaceStore.getState();
+      const page = await store.createPage({ title: 'Project Board', type: 'database' });
+      const db = useWorkspaceStore.getState().databases[page.id] || {
+        id: 'db-test-2',
+        pageId: page.id,
+        title: 'Project Board',
+        properties: [
+          { id: 'prop-title', name: 'Name', type: 'title' as const },
+          { id: 'prop-tags', name: 'Tags', type: 'multi_select' as const },
+        ],
+        views: [],
+        records: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await store.updateDatabase(db);
+
+      const rec = await store.addDatabaseRecord(db.id, {
+        'prop-title': 'Implement API',
+        'prop-tags': ['Backend', 'Security', 'P0'],
+      });
+
+      const currentDb = useWorkspaceStore.getState().databases[db.id];
+      const savedRec = currentDb.records.find((r) => r.id === rec.id);
+      expect(savedRec).toBeDefined();
+      expect(savedRec?.values['prop-tags']).toEqual(['Backend', 'Security', 'P0']);
+    });
   });
 });
+

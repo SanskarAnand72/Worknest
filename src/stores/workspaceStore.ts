@@ -36,6 +36,7 @@ interface WorkspaceState {
   archivePage: (pageId: string) => Promise<void>;
   restorePage: (pageId: string) => Promise<void>;
   deletePagePermanently: (pageId: string) => Promise<void>;
+  duplicatePage: (pageId: string) => Promise<Page | null>;
 
   // Database Actions
   updateDatabase: (db: Database) => Promise<void>;
@@ -306,6 +307,56 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       set({ activePageId: nextActive ? nextActive.id : null });
     }
     await deletePageFromDB(pageId);
+  },
+
+  duplicatePage: async (pageId) => {
+    const target = get().pages[pageId];
+    if (!target) return null;
+
+    const newPageId = generateId();
+    const duplicatedPage: Page = {
+      ...target,
+      id: newPageId,
+      title: `${target.title} (Copy)`,
+      isFavorite: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    set({
+      pages: { ...get().pages, [newPageId]: duplicatedPage },
+      activePageId: newPageId,
+      saveStatus: 'saving',
+    });
+    await savePageToDB(duplicatedPage);
+
+    // If this is a database page, duplicate its database collection as well
+    if (target.type === 'database') {
+      const targetDb = Object.values(get().databases).find((d) => d.pageId === pageId);
+      if (targetDb) {
+        const newDbId = generateId();
+        const duplicatedDb: Database = {
+          ...targetDb,
+          id: newDbId,
+          pageId: newPageId,
+          records: targetDb.records.map((r) => ({
+            ...r,
+            id: generateId(),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          })),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        set({
+          databases: { ...get().databases, [newDbId]: duplicatedDb },
+        });
+        await saveDatabaseToDB(duplicatedDb);
+      }
+    }
+
+    set({ saveStatus: 'saved' });
+    return duplicatedPage;
   },
 
   updateDatabase: async (db) => {
