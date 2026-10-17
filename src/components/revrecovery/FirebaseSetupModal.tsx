@@ -13,22 +13,88 @@ import {
   ExternalLink,
   RefreshCw,
   HardDrive,
+  UploadCloud,
+  DownloadCloud,
+  Check,
+  Info,
+  UserCheck,
+  UserX,
+  LogIn,
+  LogOut,
+  PlayCircle,
+  Lock,
 } from 'lucide-react';
 import {
   loadFirebaseConfig,
   saveFirebaseConfig,
   clearFirebaseConfig,
   checkFirebaseStatus,
+  testFirestoreReadWrite,
+  signInFirebaseUser,
+  signUpFirebaseUser,
+  signOutFirebaseUser,
   FirebaseConfig,
   FirebaseStatus,
 } from '@/lib/firebase';
-import { pushLocalDataToFirestore, pullCloudDataToIndexedDB, SyncResult } from '@/lib/firebaseSync';
-import { UploadCloud, DownloadCloud, Check, Info } from 'lucide-react';
+import { pushLocalDataToFirestore, pullCloudDataToIndexedDB } from '@/lib/firebaseSync';
 
 interface FirebaseSetupModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
+
+const FIRESTORE_RULES_TEXT = `rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
+        request.auth.token.workspaceId == workspaceId ||
+        workspaceId == 'ws-main'
+      );
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role in ['owner', 'co-founder', 'co-owner', 'admin'])
+      );
+    }
+
+    match /system/ping {
+      allow read: if isAuthenticated();
+      allow write: if false;
+    }
+
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow read: if isWorkspaceMember(workspaceId);
+      allow create: if isAuthenticated();
+      allow update, delete: if isWorkspaceAdmin(workspaceId);
+
+      match /members/{memberId} {
+        allow read: if isWorkspaceMember(workspaceId);
+        allow write: if isWorkspaceAdmin(workspaceId) || (isAuthenticated() && memberId == request.auth.uid);
+      }
+
+      match /{allChildren=**} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+    }
+  }
+}`;
 
 export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, onClose }) => {
   const [apiKey, setApiKey] = useState('');
@@ -42,6 +108,9 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
   const [status, setStatus] = useState<FirebaseStatus>({
     isConfigured: false,
     isConnected: false,
+    isAuthenticated: false,
+    userEmail: null,
+    userUid: null,
     projectId: null,
     authDomain: null,
     activeMode: 'indexeddb',
@@ -53,6 +122,16 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [copiedRules, setCopiedRules] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+  // Auth fields
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authFeedback, setAuthFeedback] = useState<string | null>(null);
+
+  // Live Read/Write Test
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<{ success: boolean; message: string } | null>(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -78,6 +157,9 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
       setStatus({
         isConfigured: false,
         isConnected: false,
+        isAuthenticated: false,
+        userEmail: null,
+        userUid: null,
         projectId: null,
         authDomain: null,
         activeMode: 'indexeddb',
@@ -90,12 +172,10 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
 
   const handleParseJson = () => {
     try {
-      // Clean JSON text if wrapped in `const firebaseConfig = { ... };`
       let clean = jsonPaste.trim();
       if (clean.includes('{') && clean.includes('}')) {
         clean = clean.substring(clean.indexOf('{'), clean.lastIndexOf('}') + 1);
       }
-      // Replace unquoted keys with quoted keys for JSON.parse
       const sanitized = clean.replace(/(\w+)\s*:/g, '"$1":').replace(/'/g, '"');
       const parsed = JSON.parse(sanitized);
 
@@ -144,6 +224,75 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
       setMessagingSenderId('');
       setAppId('');
       refreshStatus();
+    }
+  };
+
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthFeedback('Please enter both email and password.');
+      return;
+    }
+    setAuthLoading(true);
+    setAuthFeedback(null);
+    try {
+      const user = await signInFirebaseUser(authEmail.trim(), authPassword.trim());
+      setAuthFeedback(`Signed in successfully as ${user.email}`);
+      await refreshStatus();
+    } catch (err: any) {
+      setAuthFeedback(`Sign-in failed: ${err?.message || 'Authentication error'}`);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignUp = async () => {
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthFeedback('Please enter both email and password.');
+      return;
+    }
+    setAuthLoading(true);
+    setAuthFeedback(null);
+    try {
+      const user = await signUpFirebaseUser(authEmail.trim(), authPassword.trim());
+      setAuthFeedback(`Account created successfully! Signed in as ${user.email}`);
+      await refreshStatus();
+    } catch (err: any) {
+      setAuthFeedback(`Registration failed: ${err?.message || 'Authentication error'}`);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOutFirebaseUser();
+      setAuthFeedback('Signed out from Firebase Authentication.');
+      await refreshStatus();
+    } catch (err: any) {
+      setAuthFeedback(`Sign-out failed: ${err?.message}`);
+    }
+  };
+
+  const handleRunLiveTest = async () => {
+    setProbing(true);
+    setProbeResult(null);
+    try {
+      const res = await testFirestoreReadWrite();
+      setProbeResult(res);
+      await refreshStatus();
+    } catch (err: any) {
+      setProbeResult({ success: false, message: err?.message || 'Test failed' });
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const handleCopyRules = () => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(FIRESTORE_RULES_TEXT);
+      setCopiedRules(true);
+      setTimeout(() => setCopiedRules(false), 3000);
     }
   };
 
@@ -233,7 +382,7 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
                   {status.isConnected
                     ? 'Firebase Connected & Active'
                     : status.isConfigured
-                    ? 'Firebase Configured (Connection Notice)'
+                    ? 'Firebase Configured (Connection Status)'
                     : 'Local IndexedDB Active (Default)'}
                 </span>
                 <button
@@ -256,12 +405,131 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
             </div>
           </div>
 
-          {saveMessage && (
-            <div className="p-2.5 rounded-lg bg-accent/15 border border-accent/30 text-accent text-xs flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 shrink-0" />
-              <span>{saveMessage}</span>
+          {/* Authentication & User Session Box */}
+          <div className="p-4 rounded-xl border border-border bg-card space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-xs text-foreground flex items-center gap-1.5">
+                <Lock className="w-4 h-4 text-accent" /> Firebase Authentication (Email / Password)
+              </span>
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                  status.isAuthenticated
+                    ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
+                    : 'bg-muted text-muted-foreground'
+                }`}
+              >
+                {status.isAuthenticated ? 'Authenticated' : 'Not Authenticated'}
+              </span>
             </div>
-          )}
+
+            {status.isAuthenticated ? (
+              <div className="p-3 rounded-lg bg-muted/40 border border-border flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Signed in as: {status.userEmail}</span>
+                  </div>
+                  <div className="text-[10px] font-mono text-muted-foreground">
+                    UID: {status.userUid}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="px-2.5 py-1 text-xs rounded-lg border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground flex items-center gap-1"
+                >
+                  <LogOut className="w-3 h-3" />
+                  Sign Out
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSignIn} className="space-y-2.5">
+                <p className="text-[11px] text-muted-foreground">
+                  Firestore workspace security rules require authenticated access. Sign in or create a team account to enable live Cloud Firestore syncing.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  <input
+                    type="email"
+                    required
+                    placeholder="name@revrecovery.io"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-background border border-border rounded-lg text-xs"
+                  />
+                  <input
+                    type="password"
+                    required
+                    placeholder="Password (min 6 chars)"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full px-2.5 py-1.5 bg-background border border-border rounded-lg text-xs"
+                  />
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="px-3 py-1.5 rounded-lg bg-accent text-accent-foreground font-semibold hover:opacity-90 text-xs flex items-center gap-1"
+                  >
+                    <LogIn className="w-3 h-3" />
+                    {authLoading ? 'Signing in...' : 'Sign In'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={authLoading}
+                    onClick={handleSignUp}
+                    className="px-3 py-1.5 rounded-lg border border-border hover:bg-muted text-foreground text-xs"
+                  >
+                    Create Account
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {authFeedback && (
+              <div className="p-2 rounded-lg bg-accent/10 border border-accent/20 text-accent text-xs">
+                {authFeedback}
+              </div>
+            )}
+          </div>
+
+          {/* Live Firestore Read / Write Diagnostic Tester */}
+          <div className="p-4 rounded-xl border border-border bg-card space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-xs text-foreground flex items-center gap-1.5">
+                <PlayCircle className="w-4 h-4 text-accent" /> Live Authenticated Firestore Probe Test
+              </span>
+              <button
+                type="button"
+                onClick={handleRunLiveTest}
+                disabled={probing}
+                className="px-3 py-1.5 rounded-lg bg-accent text-accent-foreground hover:opacity-90 font-semibold text-xs flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${probing ? 'animate-spin' : ''}`} />
+                <span>{probing ? 'Testing...' : 'Run Live Test'}</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Performs an authentic write to <code className="px-1 py-0.5 rounded bg-muted font-mono text-[10px]">workspaces/ws-main/companies/probe</code>, reads it back with authenticated rules, and cleans up the probe.
+            </p>
+
+            {probeResult && (
+              <div
+                className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${
+                  probeResult.success
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-500'
+                }`}
+              >
+                {probeResult.success ? (
+                  <CheckCircle className="w-4 h-4 shrink-0 mt-0.5 text-emerald-500" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
+                )}
+                <span>{probeResult.message}</span>
+              </div>
+            )}
+          </div>
 
           {/* Quick Paste JSON */}
           <div className="p-3.5 rounded-lg border border-border bg-muted/20 space-y-2">
@@ -435,35 +703,23 @@ export const FirebaseSetupModal: React.FC<FirebaseSetupModalProps> = ({ isOpen, 
             </div>
           </div>
 
-          {/* Firebase Console Setup Steps Notice */}
-          <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 space-y-2.5">
-            <div className="flex items-center gap-2 text-amber-500 font-bold text-xs">
-              <Info className="w-4 h-4" />
-              <span>Required One-Time Firebase Console Steps for Project: {projectId || 'notion-f316c'}</span>
-            </div>
-            <ol className="list-decimal list-inside space-y-1 text-[11px] text-muted-foreground leading-relaxed pl-1">
-              <li>
-                <strong>Enable Cloud Firestore:</strong> Go to <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-accent underline">Firebase Console</a> &gt; select <strong>notion-f316c</strong> &gt; click <strong>Build &gt; Firestore Database</strong> &gt; click <strong>Create database</strong>.
-              </li>
-              <li>
-                <strong>Enable Authentication:</strong> In Firebase Console, click <strong>Build &gt; Authentication</strong> &gt; click <strong>Get started</strong> &gt; enable <strong>Email/Password</strong> under Sign-in method.
-              </li>
-              <li>
-                <strong>Security Rules:</strong> In Firestore Database &gt; <strong>Rules</strong> tab, paste the rules from <code className="px-1 py-0.5 rounded bg-muted font-mono text-[10px]">firestore.rules</code> (already included in this project root) to enforce workspace isolation and Owner/Co-Founder permissions.
-              </li>
-            </ol>
-          </div>
-
-          {/* Security & Workspace Rules Information */}
-          <div className="p-3.5 rounded-lg border border-border bg-card space-y-2">
+          {/* Security Rules & 1-Click Copy */}
+          <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5 space-y-2.5">
             <div className="flex items-center justify-between">
-              <span className="font-bold text-[11px] text-foreground flex items-center gap-1.5">
-                <Shield className="w-3.5 h-3.5 text-emerald-500" /> Workspace Isolation Security Rules
+              <span className="font-bold text-xs text-emerald-500 flex items-center gap-1.5">
+                <Shield className="w-4 h-4" /> Secure Workspace Security Rules
               </span>
-              <span className="text-[10px] text-muted-foreground font-mono">firestore.rules ready in root</span>
+              <button
+                type="button"
+                onClick={handleCopyRules}
+                className="px-2.5 py-1 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/25 font-semibold text-[11px] flex items-center gap-1"
+              >
+                {copiedRules ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedRules ? 'Rules Copied!' : 'Copy Rules to Clipboard'}</span>
+              </button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              RevRecovery enforces workspace-based multi-tenancy at the path <code className="px-1 py-0.5 rounded bg-muted font-mono text-[10px]">workspaces/{'{workspaceId}'}/*</code>. One team cannot read or modify another team&apos;s leads, clients, or revenue figures.
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              In Firebase Console &gt; <strong>Firestore Database</strong> &gt; <strong>Rules</strong> tab, paste the rules and click <strong>Publish</strong> to enable authenticated workspace isolation.
             </p>
           </div>
         </div>

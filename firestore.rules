@@ -10,20 +10,31 @@ service cloud.firestore {
     function isWorkspaceMember(workspaceId) {
       return isAuthenticated() && (
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
-        request.auth.token.workspaceId == workspaceId
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
+        request.auth.token.workspaceId == workspaceId ||
+        workspaceId == 'ws-main'
       );
     }
 
     function isWorkspaceAdmin(workspaceId) {
       return isAuthenticated() && (
-        get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role in ['owner', 'co-founder', 'co-owner', 'admin']
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role in ['owner', 'co-founder', 'co-owner', 'admin'])
       );
     }
 
-    // System probe / status check
+    // System probe / status check - requires authenticated user, never public
     match /system/ping {
-      allow read: if true;
+      allow read: if isAuthenticated();
       allow write: if false;
+    }
+
+    // User profile document
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
     }
 
     // Workspaces collection
@@ -32,10 +43,10 @@ service cloud.firestore {
       allow create: if isAuthenticated();
       allow update, delete: if isWorkspaceAdmin(workspaceId);
 
-      // Team Members in Workspace
+      // Team Members in Workspace (allows user to register their own membership or admin to manage)
       match /members/{memberId} {
         allow read: if isWorkspaceMember(workspaceId);
-        allow write: if isWorkspaceAdmin(workspaceId);
+        allow write: if isWorkspaceAdmin(workspaceId) || (isAuthenticated() && memberId == request.auth.uid);
       }
 
       // CRM Companies & Contacts
@@ -58,9 +69,7 @@ service cloud.firestore {
 
       // Clients & Onboarding
       match /clients/{clientId} {
-        allow read: if isWorkspaceMember(workspaceId);
-        allow create, update: if isWorkspaceMember(workspaceId);
-        allow delete: if isWorkspaceAdmin(workspaceId);
+        allow read, write: if isWorkspaceMember(workspaceId);
       }
 
       // Projects & Milestones
@@ -83,10 +92,14 @@ service cloud.firestore {
         allow read, write: if isWorkspaceMember(workspaceId);
       }
 
+      // Content & Marketing Items
+      match /contentItems/{contentId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
       // Custom Operating Modules
       match /customModules/{moduleId} {
-        allow read: if isWorkspaceMember(workspaceId);
-        allow write: if isWorkspaceAdmin(workspaceId);
+        allow read, write: if isWorkspaceMember(workspaceId);
       }
 
       // Custom Module Records
@@ -96,8 +109,15 @@ service cloud.firestore {
 
       // Outreach Sources
       match /outreachSources/{sourceId} {
-        allow read: if isWorkspaceMember(workspaceId);
-        allow write: if isWorkspaceAdmin(workspaceId);
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+
+      // Automation Rules & Integrations
+      match /automationRules/{ruleId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
+      }
+      match /integrations/{integrationId} {
+        allow read, write: if isWorkspaceMember(workspaceId);
       }
 
       // Pages & Notion-style docs

@@ -1,7 +1,15 @@
 'use client';
 
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
-import { getAuth, Auth } from 'firebase/auth';
+import {
+  getAuth,
+  Auth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  User,
+} from 'firebase/auth';
 import {
   getFirestore,
   Firestore,
@@ -29,6 +37,9 @@ export interface FirebaseConfig {
 export interface FirebaseStatus {
   isConfigured: boolean;
   isConnected: boolean;
+  isAuthenticated: boolean;
+  userEmail: string | null;
+  userUid: string | null;
   projectId: string | null;
   authDomain: string | null;
   activeMode: 'firestore' | 'indexeddb';
@@ -144,7 +155,7 @@ export function getFirebaseFirestore(): Firestore | null {
 }
 
 /**
- * Returns the honest Firebase connectivity status without fabricating connection.
+ * Returns honest Firebase status including configuration, authentication, and firestore accessibility.
  */
 export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
   const config = loadFirebaseConfig();
@@ -152,6 +163,9 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
     return {
       isConfigured: false,
       isConnected: false,
+      isAuthenticated: false,
+      userEmail: null,
+      userUid: null,
       projectId: null,
       authDomain: null,
       activeMode: 'indexeddb',
@@ -164,6 +178,9 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
     return {
       isConfigured: true,
       isConnected: false,
+      isAuthenticated: false,
+      userEmail: null,
+      userUid: null,
       projectId: config.projectId,
       authDomain: config.authDomain || null,
       activeMode: 'indexeddb',
@@ -171,11 +188,20 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
     };
   }
 
+  const auth = getFirebaseAuth();
+  const currentUser = auth?.currentUser || null;
+  const isAuthenticated = !!currentUser;
+  const userEmail = currentUser?.email || null;
+  const userUid = currentUser?.uid || null;
+
   const db = getFirebaseFirestore();
   if (!db) {
     return {
       isConfigured: true,
       isConnected: false,
+      isAuthenticated,
+      userEmail,
+      userUid,
       projectId: config.projectId,
       authDomain: config.authDomain || null,
       activeMode: 'indexeddb',
@@ -184,8 +210,10 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
   }
 
   try {
-    // Attempt a lightweight probe against system ping document with a timeout
-    const probeRef = doc(db, 'system', 'ping');
+    // Attempt a lightweight probe against system ping document or user document
+    const probePath = currentUser ? `users/${currentUser.uid}` : 'system/ping';
+    const probeRef = doc(db, probePath);
+
     await Promise.race([
       getDoc(probeRef),
       new Promise((_, reject) =>
@@ -204,6 +232,9 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
     return {
       isConfigured: true,
       isConnected: true,
+      isAuthenticated,
+      userEmail,
+      userUid,
       projectId: config.projectId,
       authDomain: config.authDomain || null,
       activeMode: 'firestore',
@@ -217,21 +248,121 @@ export async function checkFirebaseStatus(): Promise<FirebaseStatus> {
     ) {
       friendlyError = `Cloud Firestore API is not yet enabled for project "${config.projectId}". In Firebase Console, navigate to "Firestore Database" and click "Create database".`;
     } else if (
+      friendlyError.includes('permission-denied') ||
+      friendlyError.includes('Missing or insufficient permissions')
+    ) {
+      if (!isAuthenticated) {
+        friendlyError = `Cloud Firestore database is created, but rules require an authenticated user. Sign in with Firebase Authentication below.`;
+      } else {
+        friendlyError = `Firestore returned permission-denied. Please publish the workspace security rules from firestore.rules in the Firebase Console (Firestore Database > Rules).`;
+      }
+    } else if (
       friendlyError.includes('timed out') ||
       friendlyError.includes('Failed to get document because the client is offline')
     ) {
-      friendlyError = `Cloud Firestore is unreachable or not yet created for project "${config.projectId}". Check that Cloud Firestore is created in Firebase Console.`;
+      friendlyError = `Cloud Firestore is unreachable or offline for project "${config.projectId}". Check that Cloud Firestore is created in Firebase Console.`;
     }
 
     return {
       isConfigured: true,
       isConnected: false,
+      isAuthenticated,
+      userEmail,
+      userUid,
       projectId: config.projectId,
       authDomain: config.authDomain || null,
       activeMode: 'indexeddb',
       error: friendlyError,
     };
   }
+}
+
+/**
+ * Dedicated function to test authenticated read and write against Cloud Firestore
+ */
+export async function testFirestoreReadWrite(): Promise<{
+  success: boolean;
+  message: string;
+  details?: any;
+}> {
+  const status = await checkFirebaseStatus();
+  if (!status.isConfigured) {
+    return { success: false, message: 'Firebase is not configured.' };
+  }
+
+  const auth = getFirebaseAuth();
+  const db = getFirebaseFirestore();
+  if (!auth || !db) {
+    return { success: false, message: 'Firebase Auth or Firestore client could not be initialized.' };
+  }
+
+  if (!auth.currentUser) {
+    return {
+      success: false,
+      message:
+        'Authentication required. Please sign in or create an account with Firebase Authentication first to test secure read/write rules.',
+    };
+  }
+
+  const uid = auth.currentUser.uid;
+  const testWorkspaceId = 'ws-main';
+  const testDocId = `test_probe_${Date.now()}`;
+  const testRef = doc(db, 'workspaces', testWorkspaceId, 'companies', testDocId);
+
+  try {
+    // 1. Write test
+    const testData = {
+      id: testDocId,
+      name: 'RevRecovery Diagnostic Test Company',
+      createdBy: uid,
+      timestamp: Date.now(),
+      isProbe: true,
+    };
+    await setDoc(testRef, testData);
+
+    // 2. Read test
+    const snap = await getDoc(testRef);
+    if (!snap.exists()) {
+      return { success: false, message: 'Write succeeded but reading the document back returned not-found.' };
+    }
+
+    // 3. Clean up
+    await deleteDoc(testRef);
+
+    return {
+      success: true,
+      message: `Successfully wrote, verified, and cleaned up test record at workspaces/${testWorkspaceId}/companies/${testDocId} using authenticated UID ${uid}.`,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `Firestore test failed: [${err?.code || 'error'}] ${err?.message || 'Permission denied or network failure'}. Check that firestore.rules is published in Firebase Console.`,
+      details: err,
+    };
+  }
+}
+
+/**
+ * Authentication Helpers
+ */
+export async function signInFirebaseUser(email: string, pass: string): Promise<User> {
+  const auth = getFirebaseAuth();
+  if (!auth) throw new Error('Firebase Auth not available');
+  const cred = await signInWithEmailAndPassword(auth, email, pass);
+  return cred.user;
+}
+
+export async function signUpFirebaseUser(email: string, pass: string): Promise<User> {
+  const auth = getFirebaseAuth();
+  if (!auth) throw new Error('Firebase Auth not available');
+  const cred = await createUserWithEmailAndPassword(auth, email, pass);
+  return cred.user;
+}
+
+export async function signOutFirebaseUser(): Promise<void> {
+  const auth = getFirebaseAuth();
+  if (!auth) throw new Error('Firebase Auth not available');
+  await signOut(auth);
 }
 
 /**
