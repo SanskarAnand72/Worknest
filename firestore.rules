@@ -2,12 +2,16 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 1. Authentication Helper
+    // ========================================================
+    // 1. AUTHENTICATION HELPER
+    // ========================================================
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // 2. Member Record Retrieval & Membership Check
+    // ========================================================
+    // 2. MEMBERSHIP & ROLE RESOLUTION HELPERS
+    // ========================================================
     function isRegisteredMember(workspaceId) {
       return isAuthenticated() &&
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
@@ -17,16 +21,24 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
     }
 
-    // 3. Workspace Owner / Founders
+    // ========================================================
+    // 3. WORKSPACE OWNER & FOUNDERS
+    // Verified by workspace document ownerId/ownerEmail OR member record role
+    // ========================================================
     function isWorkspaceOwner(workspaceId) {
       return isAuthenticated() && (
         (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
+         (get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid ||
+          ('ownerEmail' in get(/databases/$(database)/documents/workspaces/$(workspaceId)).data &&
+           request.auth.token.email != null &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerEmail == request.auth.token.email))) ||
         (isRegisteredMember(workspaceId) && getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner'])
       );
     }
 
-    // 4. Workspace Administrators
+    // ========================================================
+    // 4. WORKSPACE ADMINISTRATORS
+    // ========================================================
     function isWorkspaceAdmin(workspaceId) {
       return isAuthenticated() && (
         isWorkspaceOwner(workspaceId) ||
@@ -34,19 +46,28 @@ service cloud.firestore {
       );
     }
 
-    // 5. Internal Agency Team Member (Full internal access)
+    // ========================================================
+    // 5. INTERNAL AGENCY TEAM MEMBERS
+    // Full operational access to agency workspace data
+    // ========================================================
     function isInternalTeamMember(workspaceId) {
-      return isRegisteredMember(workspaceId) &&
-        getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner', 'admin', 'member', 'viewer'];
+      return isWorkspaceOwner(workspaceId) ||
+        (isRegisteredMember(workspaceId) &&
+         getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner', 'admin', 'member', 'viewer']);
     }
 
-    // 6. Verified Client User (client_admin or client_guest)
+    // ========================================================
+    // 6. CLIENT PORTAL USER ROLE
+    // ========================================================
     function isClientUser(workspaceId) {
       return isRegisteredMember(workspaceId) &&
         getMember(workspaceId).role in ['client_admin', 'client_guest'];
     }
 
-    // 7. Verify Client Organization Portal Access Status (Suspended/Revoked check)
+    // ========================================================
+    // 7. CLIENT ORGANIZATION ACTIVE STATUS CHECK
+    // Verifies the client organization is not revoked or suspended
+    // ========================================================
     function isClientPortalActive(workspaceId, clientId) {
       return exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)) &&
         get(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)).data.portalAccessStatus != 'Revoked' &&
@@ -54,20 +75,40 @@ service cloud.firestore {
          get(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)).data.portalSettings.enabled == true);
     }
 
-    // 8. Client Organization Authorization Guard:
-    // Requires that the client user's registered clientId strictly matches the target clientId
-    // and the client organization is active (not revoked or offline)
+    // ========================================================
+    // 8. INDIVIDUAL REPRESENTATIVE REVOCATION CHECK
+    // Prevents revoked representatives from retaining access
+    // ========================================================
+    function isClientUserNotRevoked(workspaceId) {
+      return (
+        !('invitationId' in getMember(workspaceId)) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(getMember(workspaceId).invitationId)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(getMember(workspaceId).invitationId)).data.status != 'revoked')
+      ) && (
+        !exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(request.auth.uid)).data.status != 'revoked'
+      );
+    }
+
+    // ========================================================
+    // 9. CLIENT ORGANIZATION AUTHORIZATION GUARD
+    // Requires that the client user's registered clientId strictly matches the target clientId,
+    // their representative invitation is not revoked, and the client organization portal access is active.
+    // ========================================================
     function isAuthorizedClient(workspaceId, clientId) {
       return isAuthenticated() &&
         clientId != null &&
         isClientUser(workspaceId) &&
         getMember(workspaceId).clientId == clientId &&
+        isClientUserNotRevoked(workspaceId) &&
         isClientPortalActive(workspaceId, clientId);
     }
 
-    // 9. Genuine Invitation Validation Guard:
+    // ========================================================
+    // 10. GENUINE INVITATION VALIDATION GUARD
     // Strictly verifies that a genuine admin-created invitation exists matching the user's email,
     // clientId, and role. Prevents self-assigning arbitrary roles or client organizations.
+    // ========================================================
     function isValidClientInvitation(workspaceId, memberId, memberData) {
       return isAuthenticated() &&
         request.auth.token.email != null &&
@@ -103,7 +144,7 @@ service cloud.firestore {
     // Workspaces collection
     match /workspaces/{workspaceId} {
       allow read: if isInternalTeamMember(workspaceId) || isClientUser(workspaceId);
-      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
+      allow create: if isAuthenticated() && (request.resource.data.ownerId == request.auth.uid || !('ownerId' in request.resource.data));
       allow update, delete: if isWorkspaceAdmin(workspaceId);
 
       // Members Management (Prevents self-escalation and arbitrary client assignment)
@@ -113,8 +154,13 @@ service cloud.firestore {
           // Case 1: Workspace owner creating their initial owner membership
           isAuthenticated() &&
           request.auth.uid == memberId &&
-          exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid &&
+          (
+            !exists(/databases/$(database)/documents/workspaces/$(workspaceId)) ||
+            get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid ||
+            ('ownerEmail' in get(/databases/$(database)/documents/workspaces/$(workspaceId)).data &&
+             request.auth.token.email != null &&
+             get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerEmail == request.auth.token.email)
+          ) &&
           request.resource.data.role in ['owner', 'co-founder', 'admin']
         ) || (
           // Case 2: Client representative accepting a genuine invitation created by an authorized admin
@@ -137,12 +183,13 @@ service cloud.firestore {
       // Client Portal Invited Users
       match /clientPortalUsers/{portalUserId} {
         allow read: if isInternalTeamMember(workspaceId) || 
-          (isAuthenticated() && request.auth.token.email != null && resource.data.email == request.auth.token.email) ||
-          (isAuthorizedClient(workspaceId, resource.data.clientId));
+          (isAuthenticated() && request.auth.token.email != null && 'email' in resource.data && resource.data.email == request.auth.token.email) ||
+          ('clientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.clientId));
         allow create: if isWorkspaceAdmin(workspaceId);
         allow update: if isWorkspaceAdmin(workspaceId) || (
           isAuthenticated() &&
           request.auth.token.email != null &&
+          'email' in resource.data &&
           resource.data.email == request.auth.token.email &&
           request.resource.data.email == resource.data.email &&
           request.resource.data.clientId == resource.data.clientId &&
@@ -155,25 +202,27 @@ service cloud.firestore {
 
       // Pipeline Leads / Deals (Isolated per client organization)
       match /leads/{leadId} {
-        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow read: if isInternalTeamMember(workspaceId) || ('clientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.clientId));
         allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
       }
 
       // Outreach Activities (Isolated per client organization)
       match /activities/{activityId} {
-        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow read: if isInternalTeamMember(workspaceId) || ('clientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.clientId));
         allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
       }
 
       // Meetings (Isolated per client organization)
       match /meetings/{meetingId} {
-        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.relatedClientId);
+        allow read: if isInternalTeamMember(workspaceId) || 
+          (('relatedClientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.relatedClientId)) ||
+           ('clientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.clientId)));
         allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
       }
 
       // Delivery Projects & Milestones (Isolated per client organization)
       match /projects/{projectId} {
-        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow read: if isInternalTeamMember(workspaceId) || ('clientId' in resource.data && isAuthorizedClient(workspaceId, resource.data.clientId));
         allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
       }
 
@@ -211,6 +260,9 @@ service cloud.firestore {
         allow read, write: if isInternalTeamMember(workspaceId);
       }
       match /pages/{pageId} {
+        allow read, write: if isInternalTeamMember(workspaceId);
+      }
+      match /databases/{databaseId} {
         allow read, write: if isInternalTeamMember(workspaceId);
       }
       match /teamMembers/{teamMemberId} {
