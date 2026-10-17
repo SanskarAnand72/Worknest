@@ -686,5 +686,186 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(resUninvited.authorized).toBe(false);
     expect(resUninvited.statusCode).toBe(404);
   });
+
+  it('14. Multi-client distinct email invitations and strict cross-client access prevention', async () => {
+    const {
+      registerClient,
+      registerCompany,
+      registerPortalUser,
+      checkClientOrganizationAuthorization,
+    } = await import('../src/lib/invitationRegistry');
+
+    const store = useRevRecoveryStore.getState();
+
+    // 1. Create Client 1: Nexus Dynamics with email nexus.lead@nexusdynamics.io
+    const client1Company = await store.addCompany({
+      name: 'Nexus Dynamics',
+      industry: 'FinTech Enterprise',
+    });
+    const client1 = await store.addClient({
+      companyId: client1Company.id,
+      contactEmail: 'nexus.lead@nexusdynamics.io',
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
+      monthlyValue: 7500,
+      contractStatus: 'Active',
+      startDate: '2026-10-01',
+      renewalDate: '2027-10-01',
+      accountOwner: 'Sanskar Anand',
+      servicesPurchased: ['Outbound Outreach'],
+      currentObjectives: 'Scale US FinTech meetings',
+      successMetrics: '20 meetings/mo',
+      notes: 'Internal secret notes for Nexus - strictly private',
+      operationalMetrics: {
+        id: 'metrics-nexus',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 300,
+        contactsReached: 250,
+        totalReplies: 45,
+        positiveReplies: 18,
+        qualifiedProspects: 12,
+        meetingsBooked: 8,
+        meetingsCompleted: 6,
+        dealsClosed: 2,
+        revenueGenerated: 45000,
+        internalNotes: 'Top-secret internal commission and CRM notes for Nexus',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 2. Create Client 2: Vanguard Tech with email sarah.vanguard@vanguardtech.ai
+    const client2Company = await store.addCompany({
+      name: 'Vanguard Tech',
+      industry: 'AI Healthcare',
+    });
+    const client2 = await store.addClient({
+      companyId: client2Company.id,
+      contactEmail: 'sarah.vanguard@vanguardtech.ai',
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
+      monthlyValue: 9000,
+      contractStatus: 'Active',
+      startDate: '2026-10-01',
+      renewalDate: '2027-10-01',
+      accountOwner: 'Sarah Jenkins',
+      servicesPurchased: ['Lead Research & Verification'],
+      currentObjectives: 'Scale AI Healthcare pipeline',
+      successMetrics: '25 meetings/mo',
+      notes: 'Internal confidential notes for Vanguard',
+      operationalMetrics: {
+        id: 'metrics-vanguard',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 500,
+        contactsReached: 400,
+        totalReplies: 70,
+        positiveReplies: 30,
+        qualifiedProspects: 22,
+        meetingsBooked: 14,
+        meetingsCompleted: 11,
+        dealsClosed: 4,
+        revenueGenerated: 80000,
+        internalNotes: 'Internal margin notes for Vanguard',
+        updatedBy: 'Sarah Jenkins',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 3. Verify neither has portal access merely because email was entered (Requirement 6)
+    expect(client1.contactEmail).toBe('nexus.lead@nexusdynamics.io');
+    expect(client1.portalAccessStatus).toBe('Not Invited');
+    expect(client2.contactEmail).toBe('sarah.vanguard@vanguardtech.ai');
+    expect(client2.portalAccessStatus).toBe('Not Invited');
+
+    // Register clients and companies in server registry
+    registerCompany(client1Company);
+    registerClient(client1, client1Company);
+    registerCompany(client2Company);
+    registerClient(client2, client2Company);
+
+    // Verify uninvited access attempts are rejected
+    const uninvitedNexus = checkClientOrganizationAuthorization('nexus.lead@nexusdynamics.io', client1.id);
+    expect(uninvitedNexus.authorized).toBe(false);
+    expect(uninvitedNexus.statusCode).toBe(404);
+
+    // 4. Invite Client 1 with their actual email
+    const invite1Result = await store.inviteClientPortalUser(client1.id, {
+      email: 'nexus.lead@nexusdynamics.io',
+      name: 'Nexus Lead Representative',
+      role: 'client_admin',
+    });
+    registerPortalUser(invite1Result.user);
+
+    // Verify Client 1 invitation is linked to Client 1 ID
+    expect(invite1Result.user.clientId).toBe(client1.id);
+    expect(invite1Result.user.email).toBe('nexus.lead@nexusdynamics.io');
+    expect(invite1Result.inviteLink).toContain(encodeURIComponent('nexus.lead@nexusdynamics.io'));
+    expect(invite1Result.inviteLink).toContain(`clientId=${client1.id}`);
+
+    // 5. Invite Client 2 with their actual email
+    const invite2Result = await store.inviteClientPortalUser(client2.id, {
+      email: 'sarah.vanguard@vanguardtech.ai',
+      name: 'Sarah Vanguard',
+      role: 'client_admin',
+    });
+    registerPortalUser(invite2Result.user);
+
+    // Verify Client 2 invitation is linked to Client 2 ID
+    expect(invite2Result.user.clientId).toBe(client2.id);
+    expect(invite2Result.user.email).toBe('sarah.vanguard@vanguardtech.ai');
+    expect(invite2Result.inviteLink).toContain(encodeURIComponent('sarah.vanguard@vanguardtech.ai'));
+    expect(invite2Result.inviteLink).toContain(`clientId=${client2.id}`);
+
+    // 6. Test Authorized Access: Client 1 logs into Client 1
+    const authNexusOwn = checkClientOrganizationAuthorization('nexus.lead@nexusdynamics.io', client1.id);
+    expect(authNexusOwn.authorized).toBe(true);
+    expect(authNexusOwn.client?.id).toBe(client1.id);
+    expect(authNexusOwn.user?.email).toBe('nexus.lead@nexusdynamics.io');
+
+    // 7. Test Cross-Client Access: Client 1 attempts to access Client 2 -> MUST BE BLOCKED
+    const crossNexusToVanguard = checkClientOrganizationAuthorization('nexus.lead@nexusdynamics.io', client2.id);
+    expect(crossNexusToVanguard.authorized).toBe(false);
+    expect(crossNexusToVanguard.statusCode).toBe(403);
+    expect(crossNexusToVanguard.error).toContain('Security Error: This email invitation is not authorized');
+    expect(crossNexusToVanguard.diagnostic?.code).toBe('CLIENT_ORG_MISMATCH');
+    expect(crossNexusToVanguard.diagnostic?.requestedClientId).toBe(client2.id);
+
+    // 8. Test Authorized Access: Client 2 logs into Client 2
+    const authVanguardOwn = checkClientOrganizationAuthorization('sarah.vanguard@vanguardtech.ai', client2.id);
+    expect(authVanguardOwn.authorized).toBe(true);
+    expect(authVanguardOwn.client?.id).toBe(client2.id);
+    expect(authVanguardOwn.user?.email).toBe('sarah.vanguard@vanguardtech.ai');
+
+    // 9. Test Cross-Client Access: Client 2 attempts to access Client 1 -> MUST BE BLOCKED
+    const crossVanguardToNexus = checkClientOrganizationAuthorization('sarah.vanguard@vanguardtech.ai', client1.id);
+    expect(crossVanguardToNexus.authorized).toBe(false);
+    expect(crossVanguardToNexus.statusCode).toBe(403);
+    expect(crossVanguardToNexus.error).toContain('Security Error: This email invitation is not authorized');
+    expect(crossVanguardToNexus.diagnostic?.code).toBe('CLIENT_ORG_MISMATCH');
+    expect(crossVanguardToNexus.diagnostic?.requestedClientId).toBe(client1.id);
+
+    // 10. Test Access Revocation for Client 1
+    await store.revokeClientPortalUser(invite1Result.user.id);
+    const updatedUser1 = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === invite1Result.user.id);
+    expect(updatedUser1?.status).toBe('revoked');
+    registerPortalUser(updatedUser1!);
+
+    const revokedNexusCheck = checkClientOrganizationAuthorization('nexus.lead@nexusdynamics.io', client1.id);
+    expect(revokedNexusCheck.authorized).toBe(false);
+    expect(revokedNexusCheck.statusCode).toBe(403);
+    expect(revokedNexusCheck.error).toContain('Access Revoked');
+
+    // 11. Verify Client 2 remains active and unaffected after Client 1 revocation
+    const vanguardStillActive = checkClientOrganizationAuthorization('sarah.vanguard@vanguardtech.ai', client2.id);
+    expect(vanguardStillActive.authorized).toBe(true);
+    expect(vanguardStillActive.client?.id).toBe(client2.id);
+  });
 });
+
 

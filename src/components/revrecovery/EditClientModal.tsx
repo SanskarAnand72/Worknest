@@ -82,7 +82,7 @@ export const EditClientModal: React.FC<EditClientModalProps> = ({
       setIndustry(company?.industry || 'B2B SaaS');
       setTargetMarket(client.discoveryQuestionnaire?.targetMarket || '');
       setContactName(primaryContact?.name || '');
-      setContactEmail(primaryContact?.email || '');
+      setContactEmail(client.contactEmail || primaryContact?.email || '');
       setContactPhone(primaryContact?.phone || '');
       setContactTitle(primaryContact?.title || 'Decision Maker');
       setAccountOwner(client.accountOwner || teamMembers[0]?.name || 'Sanskar Anand');
@@ -164,6 +164,7 @@ export const EditClientModal: React.FC<EditClientModalProps> = ({
 
       await updateClient(client.id, {
         primaryContactId: contactId,
+        contactEmail: contactEmail.trim().toLowerCase(),
         accountOwner,
         monthlyValue: Number(monthlyValue) || 0,
         currency,

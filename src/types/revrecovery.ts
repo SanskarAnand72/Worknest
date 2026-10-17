@@ -215,7 +215,12 @@ export function getClientPortalAccessStatus(client: Client, portalUsers: ClientP
     // If explicitly stored
     if (client.portalSettings && !client.portalSettings.enabled) return 'Revoked';
   }
-  const usersForClient = portalUsers.filter((u) => u.clientId === client.id);
+  const usersForClient = portalUsers.filter(
+    (u) =>
+      u.clientId === client.id ||
+      client.portalUserIds?.includes(u.id) ||
+      (client.contactEmail && u.email.toLowerCase() === client.contactEmail.toLowerCase())
+  );
   if (usersForClient.length === 0) return 'Not Invited';
   if (client.portalSettings && !client.portalSettings.enabled) return 'Revoked';
   const hasActive = usersForClient.some((u) => u.status === 'active');

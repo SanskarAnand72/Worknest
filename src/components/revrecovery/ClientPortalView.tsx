@@ -52,7 +52,9 @@ export const ClientPortalView: React.FC = () => {
   const [selectedLeadStage, setSelectedLeadStage] = useState<string>('all');
 
   // Determine current active client organization
-  const activeClientId = portalClientId || portalClientUser?.clientId || (clients.find((c) => !c.archived)?.id ?? clients[0]?.id) || '';
+  // For authenticated client users, portalClientUser.clientId is strictly authoritative.
+  // For internal team preview mode, portalClientId is used. Cross-client fallback is forbidden.
+  const activeClientId = portalClientUser ? portalClientUser.clientId : (portalClientId || '');
   const portalData = useMemo(() => {
     if (!activeClientId) return null;
     return getClientPortalData(activeClientId, portalDateFilter);

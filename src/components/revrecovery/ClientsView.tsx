@@ -167,7 +167,7 @@ export const ClientsView: React.FC = () => {
       setPortalActionError(null);
       setPortalActionSuccess(null);
     }
-  }, [activeClient?.id]);
+  }, [activeClient?.id, activeClient?.contactEmail, activeContact?.email, activeTab]);
 
   // Synchronize client records and invitations with server registry for cloud access
   useEffect(() => {
@@ -271,9 +271,11 @@ export const ClientsView: React.FC = () => {
       return;
     }
     try {
+      const emailLower = newContactEmail.trim().toLowerCase();
       await updateClient(activeClient.id, {
-        contactEmail: newContactEmail.trim().toLowerCase(),
+        contactEmail: emailLower,
       });
+      setPortalInviteEmail(emailLower);
       setIsUpdatingContactEmail(false);
       setPortalActionSuccess('Contact email updated successfully.');
       setTimeout(() => setPortalActionSuccess(null), 3000);
@@ -319,8 +321,7 @@ export const ClientsView: React.FC = () => {
       setPortalActionSuccess(
         `Portal invitation link created for ${result.user.email}. Share this login URL directly with the client.`
       );
-      setPortalInviteEmail('');
-      setPortalInviteName('');
+      setPortalInviteEmail(result.user.email);
     } catch (err: unknown) {
       setPortalActionError(err instanceof Error ? err.message : 'Failed to invite client user.');
     }
@@ -391,7 +392,12 @@ RevRecovery Growth Team`;
     ? projects.filter((p) => p.clientId === activeClient.id)
     : [];
   const clientPortalUsersList = activeClient
-    ? clientPortalUsers.filter((u) => u.clientId === activeClient.id)
+    ? clientPortalUsers.filter(
+        (u) =>
+          u.clientId === activeClient.id ||
+          activeClient.portalUserIds?.includes(u.id) ||
+          (activeClient.contactEmail && u.email.toLowerCase() === activeClient.contactEmail.toLowerCase())
+      )
     : [];
 
   const portalStatus = activeClient

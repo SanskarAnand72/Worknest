@@ -825,13 +825,15 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     const normalizedEmail = data.email.trim().toLowerCase();
 
     const existingUser = get().clientPortalUsers.find(
-      (u) => u.clientId === clientId && u.email === normalizedEmail
+      (u) => (u.clientId === clientId && u.email === normalizedEmail) || u.email === normalizedEmail
     );
 
     let newUser: ClientPortalUser;
     if (existingUser) {
       newUser = {
         ...existingUser,
+        clientId,
+        clientName,
         status: 'invited',
         role: data.role || existingUser.role || 'client_admin',
         invitedAt: Date.now(),
@@ -866,7 +868,7 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
       await get().updateClient(clientId, {
         portalUserIds: updatedUserIds,
         portalAccessStatus: 'Invitation Pending',
-        contactEmail: client.contactEmail || newUser.email,
+        contactEmail: newUser.email,
       });
     }
 

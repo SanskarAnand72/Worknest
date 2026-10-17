@@ -47,6 +47,14 @@ export function ensureRegistryInitialized(): InvitationRegistry {
       const orgKey = comp.name.toLowerCase().trim();
       globalRegistry.aliases.set(comp.id.toLowerCase(), orgKey);
       globalRegistry.aliases.set(orgKey, orgKey);
+      const firstWord = orgKey.split(/\s+/)[0];
+      if (firstWord && firstWord.length > 2) {
+        globalRegistry.aliases.set(firstWord, orgKey);
+      }
+      const slug = orgKey.replace(/[^a-z0-9]/g, '');
+      if (slug && slug.length > 2) {
+        globalRegistry.aliases.set(slug, orgKey);
+      }
     });
 
     // 2. Populate Clients
@@ -59,6 +67,10 @@ export function ensureRegistryInitialized(): InvitationRegistry {
         if (c.companyId) {
           globalRegistry.aliases.set(c.companyId.toLowerCase(), orgKey);
         }
+        const strippedId = c.id.toLowerCase().replace(/^client-/, '');
+        if (strippedId.length > 2) {
+          globalRegistry.aliases.set(strippedId, orgKey);
+        }
       }
     });
 
@@ -70,13 +82,16 @@ export function ensureRegistryInitialized(): InvitationRegistry {
         const orgKey = u.clientName.toLowerCase().trim();
         globalRegistry.aliases.set(u.clientId.toLowerCase(), orgKey);
         globalRegistry.aliases.set(orgKey, orgKey);
+        const firstWord = orgKey.split(/\s+/)[0];
+        if (firstWord && firstWord.length > 2) {
+          globalRegistry.aliases.set(firstWord, orgKey);
+        }
+        const strippedId = u.clientId.toLowerCase().replace(/^client-/, '');
+        if (strippedId.length > 2) {
+          globalRegistry.aliases.set(strippedId, orgKey);
+        }
       }
     });
-
-    // 4. Explicit seed aliases for syscraft
-    globalRegistry.aliases.set('client-syscraft', 'syscraft');
-    globalRegistry.aliases.set('comp-syscraft', 'syscraft');
-    globalRegistry.aliases.set('syscraft', 'syscraft');
 
     globalRegistry.isInitialized = true;
   }
@@ -99,11 +114,27 @@ export function registerClient(client: Client, company?: Company) {
     reg.aliases.set(client.id.toLowerCase(), orgKey);
     reg.aliases.set(company.id.toLowerCase(), orgKey);
     reg.aliases.set(orgKey, orgKey);
+    const firstWord = orgKey.split(/\s+/)[0];
+    if (firstWord && firstWord.length > 2) {
+      reg.aliases.set(firstWord, orgKey);
+    }
+    const strippedId = client.id.toLowerCase().replace(/^client-/, '');
+    if (strippedId.length > 2) {
+      reg.aliases.set(strippedId, orgKey);
+    }
+    const slug = orgKey.replace(/[^a-z0-9]/g, '');
+    if (slug && slug.length > 2) {
+      reg.aliases.set(slug, orgKey);
+    }
   } else if (client.companyId) {
     const existingComp = reg.companies.get(client.companyId);
     if (existingComp) {
       const orgKey = existingComp.name.toLowerCase().trim();
       reg.aliases.set(client.id.toLowerCase(), orgKey);
+      const strippedId = client.id.toLowerCase().replace(/^client-/, '');
+      if (strippedId.length > 2) {
+        reg.aliases.set(strippedId, orgKey);
+      }
     }
   }
 }
@@ -290,12 +321,19 @@ export function checkClientOrganizationAuthorization(
         company = matchingCompany;
       }
     }
-    // Explicit known aliases for syscraft
-    else if (
-      authorizedOrgKey === 'syscraft' &&
-      ['client-syscraft', 'comp-syscraft', 'syscraft'].includes(normRequested)
-    ) {
-      isMatch = true;
+    // Dynamic slug / word match for any client organization
+    else {
+      const authSlug = authorizedOrgKey.replace(/[^a-z0-9]/g, '');
+      const reqSlug = normRequested.replace(/[^a-z0-9]/g, '');
+      const strippedReq = normRequested.replace(/^client-/, '').replace(/^comp-/, '');
+      const strippedClientId = client ? client.id.toLowerCase().replace(/^client-/, '') : '';
+
+      if (
+        (authSlug.length > 2 && (reqSlug.includes(authSlug) || authSlug.includes(reqSlug))) ||
+        (strippedClientId.length > 2 && strippedReq === strippedClientId)
+      ) {
+        isMatch = true;
+      }
     }
 
     if (!isMatch) {

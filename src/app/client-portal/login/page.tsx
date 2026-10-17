@@ -178,11 +178,16 @@ function ClientPortalLoginForm() {
             targetCompany &&
             (targetCompany.id.toLowerCase() === normUrlId ||
               targetCompany.name.toLowerCase() === normUrlId);
-          const isKnownAlias =
-            targetOrgKey === 'syscraft' &&
-            ['client-syscraft', 'comp-syscraft', 'syscraft'].includes(normUrlId);
+          const targetSlug = targetOrgKey.replace(/[^a-z0-9]/g, '');
+          const normUrlSlug = normUrlId.replace(/[^a-z0-9]/g, '');
+          const strippedUrlId = normUrlId.replace(/^client-/, '').replace(/^comp-/, '');
+          const strippedClientId = targetClient ? targetClient.id.toLowerCase().replace(/^client-/, '') : '';
+          const isOrgNameMatch =
+            targetOrgKey === normUrlId ||
+            (targetSlug.length > 2 && (normUrlSlug.includes(targetSlug) || targetSlug.includes(normUrlSlug))) ||
+            (strippedClientId.length > 2 && strippedUrlId === strippedClientId);
 
-          if (!isDirectMatch && !isClientMatch && !isCompMatch && !isKnownAlias) {
+          if (!isDirectMatch && !isClientMatch && !isCompMatch && !isOrgNameMatch) {
             setErrorMessage(
               'Security Error: This email invitation is not authorized to access the requested client organization.'
             );

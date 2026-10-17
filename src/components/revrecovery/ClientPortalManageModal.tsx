@@ -48,13 +48,21 @@ export const ClientPortalManageModal: React.FC<ClientPortalManageModalProps> = (
   const [activeTab, setActiveTab] = useState<'access' | 'metrics' | 'kpis' | 'users'>('access');
   const [copiedLink, setCopiedLink] = useState(false);
 
-  // Invite user form state
-  const [inviteName, setInviteName] = useState('');
-  const [inviteEmail, setInviteEmail] = useState('');
+  // Invite user form state - prefilled automatically with client record email
+  const [inviteName, setInviteName] = useState(companyName || '');
+  const [inviteEmail, setInviteEmail] = useState(client.contactEmail || '');
   const [inviteRole, setInviteRole] = useState<ClientRole>('client_admin');
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccessLink, setInviteSuccessLink] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Keep invite form synchronized when client changes or modal opens
+  React.useEffect(() => {
+    if (isOpen && client) {
+      setInviteEmail(client.contactEmail || '');
+      setInviteName(companyName || '');
+    }
+  }, [isOpen, client?.id, client?.contactEmail, companyName]);
 
   // Settings local state
   const currentSettings: ClientPortalSettings = client.portalSettings || {
@@ -86,7 +94,12 @@ export const ClientPortalManageModal: React.FC<ClientPortalManageModalProps> = (
   if (!isOpen) return null;
 
   // Filter users belonging to this client organization
-  const organizationUsers = clientPortalUsers.filter((u) => u.clientId === client.id);
+  const organizationUsers = clientPortalUsers.filter(
+    (u) =>
+      u.clientId === client.id ||
+      client.portalUserIds?.includes(u.id) ||
+      (client.contactEmail && u.email.toLowerCase() === client.contactEmail.toLowerCase())
+  );
 
   const handleToggleMetric = (metric: any) => {
     if (allowedMetrics.includes(metric)) {
@@ -145,8 +158,7 @@ export const ClientPortalManageModal: React.FC<ClientPortalManageModalProps> = (
       });
 
       setInviteSuccessLink(inviteLink);
-      setInviteEmail('');
-      setInviteName('');
+      setInviteEmail(client.contactEmail || inviteEmail.trim());
     } catch (err: any) {
       setInviteError(err?.message || 'Failed to create client user invitation');
     } finally {
