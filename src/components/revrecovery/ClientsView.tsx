@@ -169,6 +169,21 @@ export const ClientsView: React.FC = () => {
     }
   }, [activeClient?.id]);
 
+  // Synchronize client records and invitations with server registry for cloud access
+  useEffect(() => {
+    if (clients.length > 0 || clientPortalUsers.length > 0) {
+      fetch('/api/client-portal/invitation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clients,
+          companies,
+          portalUsers: clientPortalUsers,
+        }),
+      }).catch((err) => console.warn('Registry background sync notice:', err));
+    }
+  }, [clients.length, clientPortalUsers.length]);
+
   const handleOpenQuestionnaire = (client: Client) => {
     setQForm(
       client.discoveryQuestionnaire || {
@@ -319,6 +334,17 @@ export const ClientsView: React.FC = () => {
     navigator.clipboard.writeText(link);
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2500);
+
+    if (activeClient) {
+      fetch('/api/client-portal/invitation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client: activeClient,
+          company: activeCompany,
+        }),
+      }).catch(() => {});
+    }
   };
 
   // Copy invitation message

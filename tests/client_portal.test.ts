@@ -612,4 +612,79 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(rep?.status).toBe('invited');
     expect(rep?.clientId).toBe(syscraftClient?.id);
   });
+
+  it('14. checkClientOrganizationAuthorization resolves canonical org aliases and prevents cross-client access', async () => {
+    const {
+      checkClientOrganizationAuthorization,
+      registerClient,
+      registerPortalUser,
+    } = await import('../src/lib/invitationRegistry');
+
+    // Case 1: aryansans03@gmail.com with clientId='client-syscraft' succeeds
+    const res1 = checkClientOrganizationAuthorization('aryansans03@gmail.com', 'client-syscraft');
+    expect(res1.authorized).toBe(true);
+    expect(res1.user?.email).toBe('aryansans03@gmail.com');
+    expect(res1.client?.id).toBe('client-syscraft');
+
+    // Case 2: aryansans03@gmail.com with companyId='comp-syscraft' succeeds
+    const res2 = checkClientOrganizationAuthorization('aryansans03@gmail.com', 'comp-syscraft');
+    expect(res2.authorized).toBe(true);
+
+    // Case 3: aryansans03@gmail.com with slug='syscraft' succeeds
+    const res3 = checkClientOrganizationAuthorization('aryansans03@gmail.com', 'syscraft');
+    expect(res3.authorized).toBe(true);
+
+    // Case 4: aryansans03@gmail.com with no clientId in URL succeeds (resolves assigned client)
+    const res4 = checkClientOrganizationAuthorization('aryansans03@gmail.com', undefined);
+    expect(res4.authorized).toBe(true);
+
+    // Case 5: Dynamic client UUID registered for syscraft succeeds
+    registerClient({
+      id: 'dynamic-uuid-syscraft-99',
+      companyId: 'comp-syscraft',
+      servicesPurchased: ['Outbound Infrastructure'],
+      commercialTerms: '$6,500/month',
+      contractStatus: 'Active',
+      portalAccessStatus: 'Invitation Pending',
+      monthlyValue: 6500,
+      currency: 'USD',
+      startDate: '2026-10-01',
+      renewalDate: '2027-10-01',
+      accountOwner: 'Sanskar Anand',
+      currentObjectives: '',
+      successMetrics: '',
+      onboardingChecklist: [],
+      discoveryQuestionnaire: {} as any,
+      notes: '',
+      portalSettings: {
+        enabled: true,
+        allowedMetrics: ['leads'],
+        allowedTabs: ['overview'],
+        kpiTargets: {} as any,
+        sharedDocIds: [],
+        sharedNotes: '',
+      },
+      portalUserIds: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const res5 = checkClientOrganizationAuthorization('aryansans03@gmail.com', 'dynamic-uuid-syscraft-99');
+    expect(res5.authorized).toBe(true);
+
+    // Case 6: Cross-client attempt (aryansans03@gmail.com attempts to access client-acme) strictly rejected
+    const resCross = checkClientOrganizationAuthorization('aryansans03@gmail.com', 'client-acme-unauthorized');
+    expect(resCross.authorized).toBe(false);
+    expect(resCross.statusCode).toBe(403);
+    expect(resCross.error).toBe('Security Error: This email invitation is not authorized to access the requested client organization.');
+    expect(resCross.diagnostic).toBeDefined();
+    expect(resCross.diagnostic?.code).toBe('CLIENT_ORG_MISMATCH');
+    expect(resCross.diagnostic?.authorizedOrganization).toBe('syscraft');
+    expect(resCross.diagnostic?.requestedClientId).toBe('client-acme-unauthorized');
+
+    // Case 7: Uninvited email rejected
+    const resUninvited = checkClientOrganizationAuthorization('nobody_invited@nowhere.com');
+    expect(resUninvited.authorized).toBe(false);
+    expect(resUninvited.statusCode).toBe(404);
+  });
 });
+

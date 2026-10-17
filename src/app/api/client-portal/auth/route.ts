@@ -1,29 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Client, ClientPortalUser, Company } from '@/types/revrecovery';
-import { SEED_CLIENTS, SEED_CLIENT_PORTAL_USERS, SEED_COMPANIES } from '@/lib/revrecoverySeed';
-
-// Shared in-memory registry of client organizations and invitations for serverless instances
-interface InvitationRegistry {
-  companies: Map<string, Company>;
-  clients: Map<string, Client>;
-  portalUsers: Map<string, ClientPortalUser>;
-}
-
-const registry: InvitationRegistry = {
-  companies: new Map(),
-  clients: new Map(),
-  portalUsers: new Map(),
-};
-
-function ensureInitialized() {
-  if (registry.clients.size === 0) {
-    SEED_COMPANIES.forEach((comp) => registry.companies.set(comp.id, comp));
-    SEED_CLIENTS.forEach((c) => registry.clients.set(c.id, c));
-    SEED_CLIENT_PORTAL_USERS.forEach((u) => {
-      registry.portalUsers.set(u.email.toLowerCase().trim(), u);
-    });
-  }
-}
+import { ClientPortalUser } from '@/types/revrecovery';
+import {
+  checkClientOrganizationAuthorization,
+  ensureRegistryInitialized,
+  getRegistry,
+  registerClient,
+  registerPortalUser,
+} from '@/lib/invitationRegistry';
 
 /**
  * Helper to authenticate or register user via Firebase Auth Identity Toolkit REST API
@@ -74,7 +57,6 @@ async function authenticateWithFirebase(email: string, pass: string): Promise<{ 
       }
 
       if (signUpData.error?.message === 'EMAIL_EXISTS') {
-        // Account already exists but password was wrong
         return {
           success: false,
           error: 'Incorrect password for this account. Please verify your credentials or contact your account manager.',
@@ -115,7 +97,7 @@ async function authenticateWithFirebase(email: string, pass: string): Promise<{ 
  * Authenticates an invited client representative with strict organization binding & data sanitization
  */
 export async function POST(req: NextRequest) {
-  ensureInitialized();
+  ensureRegistryInitialized();
 
   try {
     const body = await req.json();
@@ -137,68 +119,22 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // 1. Check invitation authorization
-    const invitedUser = registry.portalUsers.get(normalizedEmail);
-    if (!invitedUser) {
+    // 1. Perform strict organization binding and invitation check
+    const authCheck = checkClientOrganizationAuthorization(normalizedEmail, clientId);
+    if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            'Access Denied: This email address has not been invited to any RevRecovery client portal. Please contact your account manager.',
+          error: authCheck.error || 'Access Denied: Not authorized for this client organization.',
+          diagnostic: authCheck.diagnostic,
         },
-        { status: 404 }
+        { status: authCheck.statusCode || 403 }
       );
     }
 
-    // 2. Prevent cross-client access: if clientId is provided, verify match
-    if (clientId && invitedUser.clientId !== clientId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Security Error: This email invitation is not authorized to access the requested client organization.',
-        },
-        { status: 403 }
-      );
-    }
+    const { user: invitedUser, client, company } = authCheck;
 
-    // 3. Check revocation status
-    if (invitedUser.status === 'revoked') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Access Revoked: Portal access for this account has been revoked by the RevRecovery operations team.',
-        },
-        { status: 403 }
-      );
-    }
-
-    // 4. Verify client organization
-    const client = registry.clients.get(invitedUser.clientId);
-    if (!client) {
-      return NextResponse.json(
-        { success: false, error: 'Client account record could not be found. Please contact support.' },
-        { status: 404 }
-      );
-    }
-
-    if (client.portalSettings && !client.portalSettings.enabled) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Client Portal Offline: Access for your organization is currently suspended by the account team.',
-        },
-        { status: 403 }
-      );
-    }
-
-    if (client.portalAccessStatus === 'Revoked') {
-      return NextResponse.json(
-        { success: false, error: 'Access Revoked: Portal access for your organization has been revoked.' },
-        { status: 403 }
-      );
-    }
-
-    // 5. Authenticate credentials via Firebase Auth
+    // 2. Authenticate credentials via Firebase Auth
     const authResult = await authenticateWithFirebase(normalizedEmail, password);
     if (!authResult.success) {
       return NextResponse.json(
@@ -207,22 +143,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 6. Update user status to 'active' on first successful authentication
+    // 3. Update user status to 'active' on first successful authentication
     const updatedUser: ClientPortalUser = {
       ...invitedUser,
       status: 'active',
       lastLoginAt: Date.now(),
     };
-    registry.portalUsers.set(normalizedEmail, updatedUser);
+    registerPortalUser(updatedUser);
 
     if (client.portalAccessStatus === 'Invitation Pending') {
       client.portalAccessStatus = 'Active';
-      registry.clients.set(client.id, client);
+      registerClient(client, company);
     }
 
-    const company = registry.companies.get(client.companyId);
-
-    // 7. Strictly sanitize operational metrics: omit internalNotes
+    // 4. Strictly sanitize operational metrics: omit internalNotes
     let sanitizedMetrics = undefined;
     if (client.operationalMetrics) {
       sanitizedMetrics = {

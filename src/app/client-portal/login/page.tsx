@@ -43,6 +43,7 @@ function ClientPortalLoginForm() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [invitedOrgName, setInvitedOrgName] = useState<string | null>(null);
 
   useEffect(() => {
     initWorkspace();
@@ -52,7 +53,23 @@ function ClientPortalLoginForm() {
   useEffect(() => {
     const urlEmail = searchParams.get('email');
     if (urlEmail) {
-      setEmail(urlEmail.trim().toLowerCase());
+      const normalized = urlEmail.trim().toLowerCase();
+      setEmail(normalized);
+
+      // Pre-verify invitation authorization to display clean organization context
+      const urlClientId = searchParams.get('clientId');
+      const verifyUrl = urlClientId
+        ? `/api/client-portal/invitation?email=${encodeURIComponent(normalized)}&clientId=${encodeURIComponent(urlClientId)}`
+        : `/api/client-portal/invitation?email=${encodeURIComponent(normalized)}`;
+
+      fetch(verifyUrl)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.exists && data.user?.clientName) {
+            setInvitedOrgName(data.user.clientName);
+          }
+        })
+        .catch(() => {});
     }
   }, [searchParams]);
 
@@ -121,7 +138,10 @@ function ClientPortalLoginForm() {
             });
           }
         } else {
-          // If server returned a deliberate error (Access Denied, Revoked, Password error, etc.)
+          // If server returned a security error, log safe diagnostic info for internal admins
+          if (data.diagnostic) {
+            console.warn('[RevRecovery Portal Security Diagnostic]', data.diagnostic);
+          }
           setErrorMessage(data.error || 'Authentication failed. Please check your credentials.');
           setIsLoading(false);
           return;
@@ -142,12 +162,33 @@ function ClientPortalLoginForm() {
           return;
         }
 
-        if (urlClientId && matchedUser.clientId !== urlClientId) {
-          setErrorMessage(
-            'Security Error: This email invitation is not authorized to access the requested client organization.'
-          );
-          setIsLoading(false);
-          return;
+        // Multi-identifier organization match for offline fallback
+        if (urlClientId && urlClientId.trim() !== '') {
+          const normUrlId = urlClientId.trim().toLowerCase();
+          const targetClient = clients.find((c) => c.id === matchedUser.clientId);
+          const targetCompany = targetClient ? companies.find((comp) => comp.id === targetClient.companyId) : undefined;
+          const targetOrgKey = (matchedUser.clientName || targetCompany?.name || '').toLowerCase().trim();
+
+          const isDirectMatch = matchedUser.clientId.toLowerCase() === normUrlId;
+          const isClientMatch =
+            targetClient &&
+            (targetClient.id.toLowerCase() === normUrlId ||
+              (targetClient.companyId && targetClient.companyId.toLowerCase() === normUrlId));
+          const isCompMatch =
+            targetCompany &&
+            (targetCompany.id.toLowerCase() === normUrlId ||
+              targetCompany.name.toLowerCase() === normUrlId);
+          const isKnownAlias =
+            targetOrgKey === 'syscraft' &&
+            ['client-syscraft', 'comp-syscraft', 'syscraft'].includes(normUrlId);
+
+          if (!isDirectMatch && !isClientMatch && !isCompMatch && !isKnownAlias) {
+            setErrorMessage(
+              'Security Error: This email invitation is not authorized to access the requested client organization.'
+            );
+            setIsLoading(false);
+            return;
+          }
         }
 
         if (matchedUser.status === 'revoked') {
@@ -245,7 +286,7 @@ function ClientPortalLoginForm() {
             </div>
             <h1 className="text-lg font-bold text-foreground">Client Portal Access</h1>
             <p className="text-xs text-muted-foreground max-w-xs mx-auto leading-relaxed">
-              Sign in with your invited representative email to access your authorized RevRecovery performance dashboard.
+              Sign in with your invited representative email to access your authorized RevRecovery performance dashboard{invitedOrgName ? ` for ${invitedOrgName}` : ''}.
             </p>
           </div>
 
