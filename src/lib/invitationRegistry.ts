@@ -179,6 +179,7 @@ export function registerBatch(data: {
   clients?: Client[];
   companies?: Company[];
   portalUsers?: ClientPortalUser[];
+  users?: ClientPortalUser[];
 }) {
   const reg = ensureRegistryInitialized();
 
@@ -197,8 +198,9 @@ export function registerBatch(data: {
     });
   }
 
-  if (Array.isArray(data.portalUsers)) {
-    data.portalUsers.forEach((u) => registerPortalUser(u));
+  const usersList = data.portalUsers || data.users;
+  if (Array.isArray(usersList)) {
+    usersList.forEach((u) => registerPortalUser(u));
   }
 
   return {
