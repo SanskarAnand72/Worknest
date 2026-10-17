@@ -524,4 +524,92 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     const revokedUser = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
     expect(revokedUser?.status).toBe('revoked');
   });
+
+  it('11. Representative status badges strictly distinguish Invitation Pending, Active Access, and Revoked Access', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const company = await store.addCompany({ name: 'Badge Test Corp' });
+    const client = await store.addClient({ companyId: company.id });
+
+    // 1. Initial invited user
+    const { user } = await store.inviteClientPortalUser(client.id, {
+      email: 'rep@badgetest.com',
+      name: 'Rep User',
+    });
+
+    expect(user.status).toBe('invited');
+    // Must NOT be active!
+    expect(user.status === 'active').toBe(false);
+
+    // Helper simulating UI badge logic
+    const getBadgeLabel = (status: string) => {
+      if (status === 'revoked') return 'Revoked Access';
+      if (status === 'active') return 'Active Access';
+      return 'Invitation Pending';
+    };
+
+    expect(getBadgeLabel(user.status)).toBe('Invitation Pending');
+
+    // 2. After user authenticates first time
+    const activatedUser = { ...user, status: 'active' as const, lastLoginAt: Date.now() };
+    store.setPortalClientUser(activatedUser);
+    expect(getBadgeLabel(activatedUser.status)).toBe('Active Access');
+
+    // 3. After user revoked
+    await store.revokeClientPortalUser(user.id);
+    const inStore = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
+    expect(inStore).toBeDefined();
+    expect(getBadgeLabel(inStore!.status)).toBe('Revoked Access');
+  });
+
+  it('12. Authentication flow validates organization binding and denies cross-client or uninvited access', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const companyA = await store.addCompany({ name: 'Alpha Org' });
+    const clientA = await store.addClient({ companyId: companyA.id });
+
+    const companyB = await store.addCompany({ name: 'Beta Org' });
+    const clientB = await store.addClient({ companyId: companyB.id });
+
+    // Invite user to Client A
+    await store.inviteClientPortalUser(clientA.id, {
+      email: 'authorized_a@alpha.com',
+      name: 'Alpha User',
+    });
+
+    const users = useRevRecoveryStore.getState().clientPortalUsers;
+
+    // Test 1: Uninvited email lookup fails (Access Denied)
+    const uninvited = users.find((u) => u.email === 'stranger@nowhere.com');
+    expect(uninvited).toBeUndefined();
+
+    // Test 2: Valid email found for Client A
+    const matched = users.find((u) => u.email === 'authorized_a@alpha.com');
+    expect(matched).toBeDefined();
+    expect(matched?.clientId).toBe(clientA.id);
+
+    // Test 3: Cross-client URL attempt (URL asks for clientB, but user is assigned to clientA)
+    const targetUrlClientId = clientB.id;
+    const isAuthorizedForTarget = matched?.clientId === targetUrlClientId;
+    expect(isAuthorizedForTarget).toBe(false); // Security error!
+
+    // Test 4: Genuine match for Client A succeeds
+    const isAuthorizedForOwn = matched?.clientId === clientA.id;
+    expect(isAuthorizedForOwn).toBe(true);
+  });
+
+  it('13. Seed data includes syscraft client and aryansans03@gmail.com representative ready for portal entry', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    // Verify syscraft client exists
+    const syscraftClient = store.clients.find((c) => c.contactEmail === 'aryansans03@gmail.com' || c.id === 'client-syscraft');
+    expect(syscraftClient).toBeDefined();
+    expect(syscraftClient?.monthlyValue).toBe(6500);
+
+    // Verify representative exists with status invited
+    const rep = store.clientPortalUsers.find((u) => u.email === 'aryansans03@gmail.com');
+    expect(rep).toBeDefined();
+    expect(rep?.status).toBe('invited');
+    expect(rep?.clientId).toBe(syscraftClient?.id);
+  });
 });

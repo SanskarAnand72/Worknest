@@ -47,11 +47,110 @@ export const DEFAULT_OUTREACH_SOURCES: OutreachSourceConfig[] = [
 ];
 
 
-export const SEED_COMPANIES: Company[] = [];
+export const SEED_COMPANIES: Company[] = [
+  {
+    id: 'comp-syscraft',
+    name: 'syscraft',
+    website: 'https://syscraft.io',
+    linkedinUrl: 'https://linkedin.com/company/syscraft',
+    industry: 'B2B SaaS',
+    country: 'United States',
+    city: 'San Francisco',
+    size: '11-50',
+    type: 'B2B SaaS',
+    servicesOffered: 'Outbound Revenue Infrastructure',
+    icpCriteria: 'B2B Software Companies $1M-$10M ARR',
+    icpMatchStatus: 'matched',
+    researchSource: 'Direct Client',
+    verificationStatus: 'Verified',
+    assignedResearcher: 'Sanskar Anand',
+    notes: '',
+    createdAt: 1792100000000,
+    updatedAt: 1792100000000,
+  },
+];
 export const SEED_CONTACTS: Contact[] = [];
 export const SEED_LEADS: LeadDeal[] = [];
-export const SEED_CLIENTS: Client[] = [];
-export const SEED_CLIENT_PORTAL_USERS: ClientPortalUser[] = [];
+export const SEED_CLIENTS: Client[] = [
+  {
+    id: 'client-syscraft',
+    companyId: 'comp-syscraft',
+    contactEmail: 'aryansans03@gmail.com',
+    servicesPurchased: ['Outbound Infrastructure', 'Executive Meetings Engine'],
+    commercialTerms: '$6,500/mo Retainer',
+    contractStatus: 'Active',
+    portalAccessStatus: 'Invitation Pending',
+    monthlyValue: 6500,
+    currency: 'USD',
+    startDate: '2026-10-01',
+    renewalDate: '2027-10-01',
+    accountOwner: 'Sanskar Anand',
+    currentObjectives: 'Scale qualified enterprise sales pipeline across US B2B software market.',
+    successMetrics: '15-20 qualified executive meetings per month',
+    onboardingChecklist: [],
+    discoveryQuestionnaire: {
+      targetMarket: 'US B2B SaaS $1M-$20M ARR',
+      idealCustomerProfile: 'VPs of Sales, CROs, Founders with 10-50 team size',
+      targetGeographies: 'North America, United States, Canada',
+      dealSizeAverage: '$25,000 - $60,000 ACV',
+      currentSalesProcess: 'Inbound demo requests and direct executive referrals',
+      monthlyMeetingGoal: '15 qualified executive discovery meetings',
+      monthlyBudget: '$6,500/month',
+      constraintsAndRequirements: 'Strict brand guidelines compliance and dedicated custom domain infrastructure',
+    },
+    notes: '',
+    portalSettings: {
+      enabled: true,
+      allowedMetrics: ['leads', 'outreach', 'replies', 'qualified', 'meetings', 'conversions', 'revenue', 'deals'],
+      allowedTabs: ['overview', 'campaigns', 'meetings', 'projects', 'documents'],
+      kpiTargets: {
+        monthlyOutreach: 1500,
+        monthlyLeads: 750,
+        monthlyMeetings: 15,
+        monthlyQualified: 30,
+        targetConversionRate: 8.5,
+        targetRevenue: 50000,
+      },
+      sharedDocIds: [],
+      sharedNotes: 'Welcome to your RevRecovery performance portal. Sequences are actively pacing in target accounts.',
+    },
+    portalUserIds: ['cpu-syscraft-aryan'],
+    operationalMetrics: {
+      id: 'op-syscraft-1',
+      clientId: 'client-syscraft',
+      reportingPeriod: 'October 2026',
+      campaignStatus: 'Active',
+      targetAccounts: 450,
+      contactsReached: 380,
+      totalReplies: 42,
+      positiveReplies: 24,
+      qualifiedProspects: 18,
+      meetingsBooked: 12,
+      meetingsCompleted: 8,
+      dealsClosed: 3,
+      revenueGenerated: 45000,
+      updatedBy: 'Sanskar Anand',
+      updatedAt: 1792100000000,
+      createdAt: 1792100000000,
+    },
+    createdAt: 1792100000000,
+    updatedAt: 1792100000000,
+  },
+];
+export const SEED_CLIENT_PORTAL_USERS: ClientPortalUser[] = [
+  {
+    id: 'cpu-syscraft-aryan',
+    email: 'aryansans03@gmail.com',
+    name: 'syscraft',
+    clientId: 'client-syscraft',
+    clientName: 'syscraft',
+    role: 'client_admin',
+    status: 'invited',
+    invitedBy: 'Sanskar Anand',
+    invitedAt: 1792100000000,
+    createdAt: 1792100000000,
+  },
+];
 export const SEED_PROJECTS: Project[] = [];
 export const SEED_TASKS: RevTask[] = [];
 export const SEED_MEETINGS: Meeting[] = [];

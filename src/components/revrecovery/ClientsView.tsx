@@ -286,6 +286,21 @@ export const ClientsView: React.FC = () => {
         role: portalInviteRole,
       });
 
+      // Synchronize invitation to cloud API for multi-device access
+      try {
+        await fetch('/api/client-portal/invitation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client: activeClient,
+            company: activeCompany,
+            user: result.user,
+          }),
+        });
+      } catch (syncErr) {
+        console.warn('Cloud sync notification:', syncErr);
+      }
+
       setPortalActionSuccess(
         `Portal invitation link created for ${result.user.email}. Share this login URL directly with the client.`
       );
@@ -1734,10 +1749,16 @@ RevRecovery Growth Team`;
                                     className={`px-1.5 py-0.2 rounded text-[10px] font-semibold border ${
                                       user.status === 'revoked'
                                         ? 'bg-rose-500/15 text-rose-500 border-rose-500/30'
-                                        : 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30'
+                                        : user.status === 'active'
+                                        ? 'bg-emerald-500/15 text-emerald-500 border-emerald-500/30'
+                                        : 'bg-amber-500/15 text-amber-500 border-amber-500/30'
                                     }`}
                                   >
-                                    {user.status === 'revoked' ? 'Revoked' : 'Active Access'}
+                                    {user.status === 'revoked'
+                                      ? 'Revoked Access'
+                                      : user.status === 'active'
+                                      ? 'Active Access'
+                                      : 'Invitation Pending'}
                                   </span>
                                   <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-muted text-muted-foreground capitalize">
                                     {user.role.replace('_', ' ')}
@@ -1756,6 +1777,15 @@ RevRecovery Growth Team`;
                                     onClick={async () => {
                                       try {
                                         await resendClientPortalInvitation(user.id);
+                                        fetch('/api/client-portal/invitation', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            user: { ...user, status: 'invited', invitedAt: Date.now() },
+                                            client: activeClient,
+                                            company: activeCompany,
+                                          }),
+                                        }).catch(() => {});
                                         handleCopyPortalLink(user.email);
                                         setPortalActionSuccess(`Invitation refreshed & login link copied for ${user.email}`);
                                       } catch (err) {
@@ -1771,6 +1801,15 @@ RevRecovery Growth Team`;
                                     onClick={async () => {
                                       try {
                                         await revokeClientPortalUser(user.id);
+                                        fetch('/api/client-portal/invitation', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            user: { ...user, status: 'revoked' },
+                                            client: activeClient,
+                                            company: activeCompany,
+                                          }),
+                                        }).catch(() => {});
                                         setPortalActionSuccess(`Access revoked for ${user.email}`);
                                       } catch (err) {
                                         setPortalActionError('Failed to revoke access.');
@@ -1787,6 +1826,15 @@ RevRecovery Growth Team`;
                                   onClick={async () => {
                                     try {
                                       await resendClientPortalInvitation(user.id);
+                                      fetch('/api/client-portal/invitation', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          user: { ...user, status: 'invited', invitedAt: Date.now() },
+                                          client: activeClient,
+                                          company: activeCompany,
+                                        }),
+                                      }).catch(() => {});
                                       setPortalActionSuccess(`Access restored for ${user.email}`);
                                     } catch (err) {
                                       setPortalActionError('Failed to restore access.');

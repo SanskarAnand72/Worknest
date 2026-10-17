@@ -97,9 +97,15 @@ export const ClientPortalView: React.FC = () => {
   };
 
   const handleSignOut = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('revrecovery_portal_session');
+    }
     setPortalClientUser(null);
+    setPortalClientId(null);
     setIsClientPortalMode(false);
-    setActiveModule('hq');
+    if (typeof window !== 'undefined') {
+      window.location.href = '/client-portal/login';
+    }
   };
 
   // If no client exists or selected

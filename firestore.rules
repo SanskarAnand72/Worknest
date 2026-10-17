@@ -48,9 +48,11 @@ service cloud.firestore {
     // Client Organization Authorization Guard:
     // Requires that the client user's registered clientId strictly matches the record's clientId
     function isAuthorizedClient(workspaceId, clientId) {
-      return isClientUser(workspaceId) &&
-        clientId != null &&
-        getMember(workspaceId).clientId == clientId;
+      return isAuthenticated() && (
+        (isClientUser(workspaceId) && clientId != null && getMember(workspaceId).clientId == clientId) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.clientId == clientId)
+      );
     }
 
     // System probe / status check - requires authenticated user, never public
@@ -76,8 +78,11 @@ service cloud.firestore {
         allow create: if isWorkspaceAdmin(workspaceId) || (
           isAuthenticated() &&
           request.auth.uid == memberId &&
-          request.resource.data.role == 'member' &&
-          !('clientId' in request.resource.data)
+          (
+            (request.resource.data.role == 'member' && !('clientId' in request.resource.data)) ||
+            (request.resource.data.role in ['client_admin', 'client_guest'] && 'clientId' in request.resource.data &&
+             request.auth.token.email != null && request.resource.data.email == request.auth.token.email)
+          )
         );
         allow update: if isWorkspaceAdmin(workspaceId) || (
           isAuthenticated() &&
@@ -96,8 +101,17 @@ service cloud.firestore {
 
       // Client Portal Invited Users
       match /clientPortalUsers/{portalUserId} {
-        allow read: if isInternalTeamMember(workspaceId) || (isClientUser(workspaceId) && isAuthorizedClient(workspaceId, resource.data.clientId));
-        allow write: if isWorkspaceAdmin(workspaceId);
+        allow read: if isInternalTeamMember(workspaceId) || 
+          (isAuthenticated() && request.auth.token.email != null && resource.data.email == request.auth.token.email) ||
+          (isClientUser(workspaceId) && isAuthorizedClient(workspaceId, resource.data.clientId));
+        allow write: if isWorkspaceAdmin(workspaceId) || (
+          isAuthenticated() &&
+          request.auth.token.email != null &&
+          resource.data.email == request.auth.token.email &&
+          request.resource.data.email == resource.data.email &&
+          request.resource.data.clientId == resource.data.clientId &&
+          request.resource.data.role == resource.data.role
+        );
       }
 
       // Pipeline Leads / Deals (Isolated per client organization)

@@ -15,6 +15,8 @@ export default function ClientPortalDashboardPage() {
     init: initRevRecovery,
     portalClientId,
     portalClientUser,
+    setPortalClientId,
+    setPortalClientUser,
     isClientPortalMode,
     setIsClientPortalMode,
   } = useRevRecoveryStore();
@@ -36,14 +38,47 @@ export default function ClientPortalDashboardPage() {
 
   useEffect(() => {
     if (!isVerifying && isRevInitialized) {
-      // If user has not authenticated or no client is selected, redirect to login
       if (!portalClientId && !portalClientUser) {
-        router.push('/client-portal/login');
+        let restored = false;
+        if (typeof window !== 'undefined') {
+          const raw = localStorage.getItem('revrecovery_portal_session');
+          if (raw) {
+            try {
+              const session = JSON.parse(raw);
+              if (session.clientId && session.user) {
+                if (session.user.status === 'revoked') {
+                  localStorage.removeItem('revrecovery_portal_session');
+                  router.push('/client-portal/login');
+                  return;
+                }
+                setPortalClientId(session.clientId);
+                setPortalClientUser(session.user);
+                setIsClientPortalMode(true);
+                restored = true;
+              }
+            } catch (e) {
+              console.warn('Failed to parse portal session from storage:', e);
+            }
+          }
+        }
+        if (!restored) {
+          router.push('/client-portal/login');
+        }
       } else {
-        setIsClientPortalMode(true);
+        // If user status is revoked, clear session and redirect to login
+        if (portalClientUser?.status === 'revoked') {
+          if (typeof window !== 'undefined') {
+            localStorage.removeItem('revrecovery_portal_session');
+          }
+          setPortalClientUser(null);
+          setIsClientPortalMode(false);
+          router.push('/client-portal/login');
+        } else {
+          setIsClientPortalMode(true);
+        }
       }
     }
-  }, [isVerifying, isRevInitialized, portalClientId, portalClientUser, router, setIsClientPortalMode]);
+  }, [isVerifying, isRevInitialized, portalClientId, portalClientUser, router, setIsClientPortalMode, setPortalClientId, setPortalClientUser]);
 
   if (isVerifying || !isRevInitialized || !isWorkspaceInitialized) {
     return (

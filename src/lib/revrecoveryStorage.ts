@@ -238,6 +238,22 @@ export async function fetchRevRecoveryData(): Promise<RevRecoveryDataBundle> {
       outreachSources = DEFAULT_OUTREACH_SOURCES;
     }
 
+    // Ensure default client & portal invitation exist if DB is fresh
+    if (companies.length === 0 && SEED_COMPANIES.length > 0) {
+      for (const c of SEED_COMPANIES) await db.put('companies', c);
+      companies = await db.getAll('companies');
+    }
+
+    if (clients.length === 0 && SEED_CLIENTS.length > 0) {
+      for (const cl of SEED_CLIENTS) await db.put('clients', cl);
+      clients = await db.getAll('clients');
+    }
+
+    if (clientPortalUsers.length === 0 && SEED_CLIENT_PORTAL_USERS.length > 0) {
+      for (const u of SEED_CLIENT_PORTAL_USERS) await db.put('clientPortalUsers', u);
+      clientPortalUsers = await db.getAll('clientPortalUsers');
+    }
+
     // Ensure KPI targets record exists
     if (!kpiTargets) {
       await db.put('kpiTargets', SEED_KPI_TARGETS);

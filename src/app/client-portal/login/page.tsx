@@ -58,8 +58,16 @@ function ClientPortalLoginForm() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !email.includes('@')) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const urlClientId = searchParams.get('clientId');
+
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
       setErrorMessage('Please enter a valid business email address.');
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters.');
       return;
     }
 
@@ -68,76 +76,134 @@ function ClientPortalLoginForm() {
     setInfoMessage(null);
 
     try {
-      const normalizedEmail = email.trim().toLowerCase();
-      const urlClientId = searchParams.get('clientId');
+      let authSuccessful = false;
+      let authenticatedUser: any = null;
+      let targetClientId: string | null = null;
 
-      // 1. Enforce Client Organization & Email Binding
-      // A user cannot gain access merely by entering a client ID or knowing the portal URL.
-      const matchedUser = clientPortalUsers.find(
-        (u) => u.email.toLowerCase() === normalizedEmail
-      );
+      // 1. Attempt authentication via Client Portal Auth API
+      try {
+        const res = await fetch('/api/client-portal/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: normalizedEmail,
+            password,
+            clientId: urlClientId,
+          }),
+        });
 
-      if (!matchedUser) {
-        setErrorMessage(
-          'Access Denied: This email address has not been invited to any RevRecovery client portal. Please contact your account manager.'
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          authSuccessful = true;
+          authenticatedUser = data.user;
+          targetClientId = data.client.id;
+
+          // Save active session for refresh persistence
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(
+              'revrecovery_portal_session',
+              JSON.stringify({
+                user: data.user,
+                clientId: data.client.id,
+                client: data.client,
+                company: data.company,
+                timestamp: Date.now(),
+              })
+            );
+          }
+
+          // If client has operational metrics, sync into client store
+          if (data.client && clients.some((c) => c.id === data.client.id)) {
+            await updateClient(data.client.id, {
+              portalAccessStatus: 'Active',
+              operationalMetrics: data.client.operationalMetrics,
+            });
+          }
+        } else {
+          // If server returned a deliberate error (Access Denied, Revoked, Password error, etc.)
+          setErrorMessage(data.error || 'Authentication failed. Please check your credentials.');
+          setIsLoading(false);
+          return;
+        }
+      } catch (fetchErr) {
+        // Fallback to local store check (e.g. offline mode or test environment)
+        console.warn('API call fallback to local store:', fetchErr);
+
+        const matchedUser = clientPortalUsers.find(
+          (u) => u.email.toLowerCase() === normalizedEmail
         );
-        setIsLoading(false);
-        return;
+
+        if (!matchedUser) {
+          setErrorMessage(
+            'Access Denied: This email address has not been invited to any RevRecovery client portal. Please contact your account manager.'
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        if (urlClientId && matchedUser.clientId !== urlClientId) {
+          setErrorMessage(
+            'Security Error: This email invitation is not authorized to access the requested client organization.'
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        if (matchedUser.status === 'revoked') {
+          setErrorMessage(
+            'Access Revoked: Portal access for this account has been revoked by the RevRecovery operations team.'
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        const targetClient = clients.find((c) => c.id === matchedUser.clientId);
+        if (!targetClient) {
+          setErrorMessage('Client account record could not be found. Please contact support.');
+          setIsLoading(false);
+          return;
+        }
+
+        if (targetClient.portalSettings && !targetClient.portalSettings.enabled) {
+          setErrorMessage(
+            'Client Portal Offline: Access for your organization is currently suspended by the account team.'
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        authSuccessful = true;
+        authenticatedUser = {
+          ...matchedUser,
+          status: 'active' as const,
+          lastLoginAt: Date.now(),
+        };
+        targetClientId = targetClient.id;
+
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'revrecovery_portal_session',
+            JSON.stringify({
+              user: authenticatedUser,
+              clientId: targetClient.id,
+              client: targetClient,
+              timestamp: Date.now(),
+            })
+          );
+        }
+
+        if (targetClient.portalAccessStatus === 'Invitation Pending') {
+          await updateClient(targetClient.id, { portalAccessStatus: 'Active' });
+        }
       }
 
-      // 2. Prevent cross-client access: if a specific clientId is provided in the URL, verify assignment
-      if (urlClientId && matchedUser.clientId !== urlClientId) {
-        setErrorMessage(
-          'Security Error: This email invitation is not authorized to access the requested client organization.'
-        );
-        setIsLoading(false);
-        return;
+      if (authSuccessful && authenticatedUser && targetClientId) {
+        setPortalClientId(targetClientId);
+        setPortalClientUser(authenticatedUser);
+        setIsClientPortalMode(true);
+        router.push('/client-portal/dashboard');
       }
-
-      // 3. Check if user access is revoked
-      if (matchedUser.status === 'revoked') {
-        setErrorMessage(
-          'Access Revoked: Portal access for this account has been revoked by the RevRecovery operations team.'
-        );
-        setIsLoading(false);
-        return;
-      }
-
-      // 4. Verify client organization exists and is active
-      const targetClient = clients.find((c) => c.id === matchedUser.clientId);
-      if (!targetClient) {
-        setErrorMessage('Client account record could not be found. Please contact support.');
-        setIsLoading(false);
-        return;
-      }
-
-      if (targetClient.portalSettings && !targetClient.portalSettings.enabled) {
-        setErrorMessage(
-          'Client Portal Offline: Access for your organization is currently suspended by the account team.'
-        );
-        setIsLoading(false);
-        return;
-      }
-
-      // 5. Update user status to 'active' on first successful authentication
-      const updatedUser = {
-        ...matchedUser,
-        status: 'active' as const,
-        lastLoginAt: Date.now(),
-      };
-
-      // Set client organization and user in isolated portal store
-      setPortalClientId(targetClient.id);
-      setPortalClientUser(updatedUser);
-      setIsClientPortalMode(true);
-
-      // If client status was 'Invitation Pending', update to 'Active'
-      if (targetClient.portalAccessStatus === 'Invitation Pending') {
-        await updateClient(targetClient.id, { portalAccessStatus: 'Active' });
-      }
-
-      // 6. Redirect to dedicated client dashboard
-      router.push('/client-portal/dashboard');
     } catch (err: unknown) {
       console.error('Login error:', err);
       setErrorMessage(err instanceof Error ? err.message : 'Authentication failed.');
