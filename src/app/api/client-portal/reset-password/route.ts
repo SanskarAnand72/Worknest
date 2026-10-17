@@ -49,21 +49,24 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Ensure user account exists in Firebase Auth so sendOobCode delivers the email
-    // If the account does not exist yet, create it with a secure random temporary password first
+
+    // 2. Ensure user account exists in Firebase Auth so sendOobCode can dispatch the email.
+    // If user does not exist in Firebase Auth yet, provision a record so Firebase generates and sends the setup email.
     try {
-      const tempPassword = 'Init!' + Math.random().toString(36).substring(2, 10) + '!A9z' + Date.now().toString(36);
-      const signUpRes = await fetch(
+      await fetch(
         `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: normalizedEmail, password: tempPassword, returnSecureToken: false }),
+          body: JSON.stringify({
+            email: normalizedEmail,
+            password: `TempAuth_${Date.now()}_${Math.random().toString(36).slice(2)}!Aa1`,
+            returnSecureToken: false,
+          }),
         }
       );
-      // If signUp returns EMAIL_EXISTS or 200 OK, the user exists in Firebase Auth and we proceed
-    } catch (createErr) {
-      console.warn('[Firebase Auth pre-create notice]:', createErr);
+    } catch {
+      // User already exists in Firebase Auth, continue to sendOobCode
     }
 
     // 3. Dispatch official Firebase Auth Password Reset / Setup email via Identity Toolkit REST

@@ -38,6 +38,7 @@ function ClientPortalLoginForm() {
 
   const { init: initWorkspace } = useWorkspaceStore();
 
+  const [authMode, setAuthMode] = useState<'setup' | 'signin'>('setup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -47,7 +48,6 @@ function ClientPortalLoginForm() {
   const [invitedOrgName, setInvitedOrgName] = useState<string | null>(null);
   const [canResetPassword, setCanResetPassword] = useState(false);
   const [isSendingReset, setIsSendingReset] = useState(false);
-  const [isFirstTimeInvite, setIsFirstTimeInvite] = useState(false);
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -66,7 +66,7 @@ function ClientPortalLoginForm() {
       const normalized = urlEmail.trim().toLowerCase();
       setEmail(normalized);
 
-      // Pre-verify invitation authorization to display clean organization context
+      // Pre-verify invitation authorization to display clean organization context and determine initial mode
       const urlClientId = searchParams.get('clientId');
       const verifyUrl = urlClientId
         ? `/api/client-portal/invitation?email=${encodeURIComponent(normalized)}&clientId=${encodeURIComponent(urlClientId)}`
@@ -80,7 +80,9 @@ function ClientPortalLoginForm() {
               setInvitedOrgName(data.user.clientName);
             }
             if (data.user.status === 'invited') {
-              setIsFirstTimeInvite(true);
+              setAuthMode('setup');
+            } else if (data.user.status === 'active') {
+              setAuthMode('signin');
             }
           }
         })
@@ -197,6 +199,88 @@ function ClientPortalLoginForm() {
     }
   };
 
+  // First-Time Password Setup Submission Handler
+  const handleSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    const urlClientId = searchParams.get('clientId');
+
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setErrorMessage('Please enter a valid business email address.');
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      setErrorMessage('Password must be at least 6 characters long.');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setErrorMessage('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+
+    try {
+      const res = await fetch('/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'setupPassword',
+          email: normalizedEmail,
+          password,
+          clientId: urlClientId,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        // Save active session for client dashboard
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'revrecovery_portal_session',
+            JSON.stringify({
+              user: data.user,
+              clientId: data.client.id,
+              client: data.client,
+              company: data.company,
+              timestamp: Date.now(),
+            })
+          );
+        }
+
+        if (data.client && clients.some((c) => c.id === data.client.id)) {
+          await updateClient(data.client.id, {
+            portalAccessStatus: 'Active',
+            operationalMetrics: data.client.operationalMetrics,
+          });
+        }
+
+        setPortalClientId(data.client.id);
+        setPortalClientUser(data.user);
+        setIsClientPortalMode(true);
+        router.push('/client-portal/dashboard');
+      } else if (data.requiresReset) {
+        // Pre-existing account requiring verification link
+        setInfoMessage(
+          data.error || 'A secure password confirmation link has been sent to your email inbox. Please click the link to confirm your password.'
+        );
+      } else {
+        setErrorMessage(data.error || 'Failed to complete password setup. Please try again.');
+      }
+    } catch (err: unknown) {
+      console.error('Setup error:', err);
+      setErrorMessage(err instanceof Error ? err.message : 'Failed to set password.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Returning User Sign-In Handler
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const normalizedEmail = email.trim().toLowerCase();
@@ -240,7 +324,6 @@ function ClientPortalLoginForm() {
           authenticatedUser = data.user;
           targetClientId = data.client.id;
 
-          // Save active session for refresh persistence
           if (typeof window !== 'undefined') {
             localStorage.setItem(
               'revrecovery_portal_session',
@@ -254,7 +337,6 @@ function ClientPortalLoginForm() {
             );
           }
 
-          // If client has operational metrics, sync into client store
           if (data.client && clients.some((c) => c.id === data.client.id)) {
             await updateClient(data.client.id, {
               portalAccessStatus: 'Active',
@@ -262,14 +344,13 @@ function ClientPortalLoginForm() {
             });
           }
         } else {
-          // If server returned a security error, log safe diagnostic info for internal admins
           if (data.diagnostic) {
             console.warn('[RevRecovery Portal Security Diagnostic]', data.diagnostic);
           }
           if (data.canResetPassword) {
             setCanResetPassword(true);
           }
-          setErrorMessage(data.error || 'Authentication failed. Please check your credentials.');
+          setErrorMessage(data.error || 'Incorrect password for this account.');
           setIsLoading(false);
           return;
         }
@@ -417,17 +498,24 @@ function ClientPortalLoginForm() {
               <Shield className="w-6 h-6" />
             </div>
             <h1 className="text-lg font-bold text-foreground">
-              {isResetFlow ? 'Set Portal Password' : 'Client Portal Access'}
+              {isResetFlow
+                ? 'Set Portal Password'
+                : authMode === 'setup'
+                ? 'Activate Portal Access'
+                : 'Client Portal Sign In'}
             </h1>
             <p className="text-xs text-muted-foreground max-w-xs mx-auto leading-relaxed">
               {isResetFlow
-                ? 'Create a secure password for your authorized client portal account.'
-                : `Sign in with your invited representative email to access your authorized RevRecovery performance dashboard${invitedOrgName ? ` for ${invitedOrgName}` : ''}.`}
+                ? 'Create a new secure password for your authorized client portal account.'
+                : authMode === 'setup'
+                ? `Welcome! Set your password to activate your authorized RevRecovery performance dashboard${invitedOrgName ? ` for ${invitedOrgName}` : ''}.`
+                : `Sign in with your email and password to access your authorized RevRecovery dashboard${invitedOrgName ? ` for ${invitedOrgName}` : ''}.`}
             </p>
           </div>
 
-          {/* Form */}
+          {/* Form Area */}
           {isResetFlow ? (
+            /* Reset Password Form (via email link) */
             <form onSubmit={handleResetSubmit} className="p-6 space-y-4 text-xs">
               {errorMessage && (
                 <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
@@ -514,23 +602,137 @@ function ClientPortalLoginForm() {
               </button>
 
               <div className="pt-2 text-center">
-                <a
-                  href={`/client-portal/login?email=${encodeURIComponent(email)}&clientId=${encodeURIComponent(searchParams.get('clientId') || '')}`}
+                <button
+                  type="button"
+                  onClick={() => setAuthMode('signin')}
                   className="text-[11px] text-muted-foreground hover:text-foreground underline transition-colors"
                 >
                   Return to Portal Sign In
-                </a>
+                </button>
               </div>
             </form>
-          ) : (
-            <form onSubmit={handleLogin} className="p-6 space-y-4 text-xs">
-              {isFirstTimeInvite && (
-                <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center gap-2 text-[11px]">
-                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                  <span>First-time setup: Enter your password to set it up, or request an email setup link below.</span>
+          ) : authMode === 'setup' ? (
+            /* First-Time Account Setup Form */
+            <form onSubmit={handleSetupSubmit} className="p-6 space-y-4 text-xs">
+              <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center gap-2.5 text-xs">
+                <Sparkles className="w-4 h-4 shrink-0 text-sky-400" />
+                <span className="leading-relaxed">
+                  First-time access: Choose your password below to activate your account.
+                </span>
+              </div>
+
+              {errorMessage && (
+                <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{errorMessage}</span>
                 </div>
               )}
 
+              {infoMessage && (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-start gap-2.5 text-xs">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{infoMessage}</span>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Invited Contact Email</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@company.com"
+                    className="w-full pl-9 pr-3 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Create Password</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="At least 6 characters"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Confirm Password</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="Re-enter password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 mt-2"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Setting Password & Entering...</span>
+                  </>
+                ) : (
+                  <>
+                    <Key className="w-4 h-4" />
+                    <span>Set Password & Enter Portal</span>
+                  </>
+                )}
+              </button>
+
+              <div className="pt-3 border-t border-border/60 text-center space-y-2 text-[11px] text-muted-foreground">
+                <p>
+                  Already set up your password?{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signin');
+                      setErrorMessage(null);
+                      setInfoMessage(null);
+                    }}
+                    className="text-sky-500 hover:text-sky-400 font-medium underline transition-colors"
+                  >
+                    Sign In
+                  </button>
+                </p>
+                <button
+                  type="button"
+                  onClick={handleSendPasswordReset}
+                  disabled={isSendingReset}
+                  className="text-muted-foreground hover:text-foreground underline transition-colors"
+                >
+                  {isSendingReset ? 'Sending link...' : 'Prefer a setup link sent to your email?'}
+                </button>
+              </div>
+            </form>
+          ) : (
+            /* Returning User Sign-In Form */
+            <form onSubmit={handleLogin} className="p-6 space-y-4 text-xs">
               {errorMessage && (
                 <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -543,9 +745,9 @@ function ClientPortalLoginForm() {
                   <div className="flex items-start gap-2 text-sky-400">
                     <Key className="w-4 h-4 shrink-0 mt-0.5" />
                     <div className="space-y-0.5">
-                      <p className="font-semibold text-foreground text-[11px]">First time or forgot your password?</p>
+                      <p className="font-semibold text-foreground text-[11px]">Forgot or need to reset your password?</p>
                       <p className="text-muted-foreground text-[11px]">
-                        We can dispatch a secure Firebase password setup link directly to{' '}
+                        We can send a secure Firebase password reset link to{' '}
                         <span className="font-mono text-foreground font-medium">{email || 'your email'}</span>.
                       </p>
                     </div>
@@ -559,12 +761,12 @@ function ClientPortalLoginForm() {
                     {isSendingReset ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Sending Setup Link...</span>
+                        <span>Sending Link...</span>
                       </>
                     ) : (
                       <>
                         <Mail className="w-3.5 h-3.5" />
-                        <span>Send Password Setup / Reset Link</span>
+                        <span>Send Password Reset Link</span>
                       </>
                     )}
                   </button>
@@ -579,7 +781,7 @@ function ClientPortalLoginForm() {
               )}
 
               <div className="space-y-1.5">
-                <label className="block text-muted-foreground font-medium">Invited Contact Email</label>
+                <label className="block text-muted-foreground font-medium">Contact Email</label>
                 <div className="relative">
                   <Mail className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
                   <input
@@ -591,21 +793,18 @@ function ClientPortalLoginForm() {
                     className="w-full pl-9 pr-3 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
                   />
                 </div>
-                <span className="text-[11px] text-muted-foreground">
-                  Must match the exact email address invited by your account executive.
-                </span>
               </div>
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
-                  <label className="block text-muted-foreground font-medium">Password / Access Key</label>
+                  <label className="block text-muted-foreground font-medium">Password</label>
                   <button
                     type="button"
                     onClick={handleSendPasswordReset}
                     disabled={isSendingReset}
                     className="text-[10px] text-sky-500 hover:text-sky-400 underline transition-colors"
                   >
-                    {isSendingReset ? 'Sending setup link...' : 'Forgot or need setup link?'}
+                    Forgot password?
                   </button>
                 </div>
                 <div className="relative">
@@ -635,7 +834,7 @@ function ClientPortalLoginForm() {
                 {isLoading ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Verifying Credentials...</span>
+                    <span>Signing In...</span>
                   </>
                 ) : (
                   <>
@@ -645,9 +844,21 @@ function ClientPortalLoginForm() {
                 )}
               </button>
 
-              <div className="pt-3 border-t border-border/60 text-center text-[11px] text-muted-foreground space-y-1">
-                <p>Security Notice: Cross-client access and self-assigned roles are strictly prevented.</p>
-                <p>Internal CRM data and proprietary team notes are completely hidden from client accounts.</p>
+              <div className="pt-3 border-t border-border/60 text-center space-y-1 text-[11px] text-muted-foreground">
+                <p>
+                  Need to set up your account?{' '}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('setup');
+                      setErrorMessage(null);
+                      setInfoMessage(null);
+                    }}
+                    className="text-sky-500 hover:text-sky-400 font-medium underline transition-colors"
+                  >
+                    First-Time Setup
+                  </button>
+                </p>
               </div>
             </form>
           )}

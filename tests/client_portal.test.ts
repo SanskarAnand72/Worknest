@@ -1067,6 +1067,134 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(resetCompleteData.user.status).toBe('active');
     expect(resetCompleteData.client.id).toBe(alphaClient.id);
   });
+
+  it('16. First-time password setup flow, direct portal entry, and credential verification', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    // 1. Create client organization Gamma
+    const gammaCompany = await store.addCompany({
+      name: 'Gamma Aerospace Corp',
+      industry: 'Defense & Aerospace',
+      country: 'United States',
+    });
+
+    const gammaEmail = 'ops.director@gammaaero.com';
+    const gammaClient = await store.addClient({
+      companyId: gammaCompany.id,
+      contactEmail: gammaEmail,
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
+      monthlyValue: 12000,
+      contractStatus: 'Active',
+      operationalMetrics: {
+        id: 'metrics-gamma',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 800,
+        contactsReached: 700,
+        totalReplies: 110,
+        positiveReplies: 55,
+        qualifiedProspects: 38,
+        meetingsBooked: 24,
+        meetingsCompleted: 20,
+        dealsClosed: 6,
+        revenueGenerated: 160000,
+        internalNotes: 'TOP SECRET INTERNAL GAMMA MARGINS - DO NOT EXPOSE TO CLIENT',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 2. Invite representative
+    const gammaInvite = await store.inviteClientPortalUser(gammaClient.id, {
+      email: gammaEmail,
+      name: 'General Gamma Admin',
+      role: 'client_admin',
+    });
+
+    const { registerCompany, registerClient, registerPortalUser } = await import('../src/lib/invitationRegistry');
+    registerCompany(gammaCompany);
+    registerClient(gammaClient, gammaCompany);
+    registerPortalUser(gammaInvite.user);
+
+    // Initial state: user is invited, not active yet
+    expect(gammaInvite.user.status).toBe('invited');
+
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+
+    // 3. Test setupPassword with short password -> returns 400
+    const shortSetupReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'setupPassword',
+        email: gammaEmail,
+        password: '123',
+        clientId: gammaClient.id,
+      }),
+    });
+    const shortSetupRes = await authHandler(shortSetupReq as any);
+    expect(shortSetupRes.status).toBe(400);
+
+    // 4. Test setupPassword with cross-client ID -> returns 403
+    const crossSetupReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'setupPassword',
+        email: gammaEmail,
+        password: 'SecureGammaPassword2026!',
+        clientId: 'unauthorized-other-client-id',
+      }),
+    });
+    const crossSetupRes = await authHandler(crossSetupReq as any);
+    expect(crossSetupRes.status).toBe(403);
+
+    // 5. Test valid first-time setupPassword -> activates user and grants immediate portal access
+    const validSetupReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'setupPassword',
+        email: gammaEmail,
+        password: 'SecureGammaPassword2026!',
+        clientId: gammaClient.id,
+      }),
+    });
+    const validSetupRes = await authHandler(validSetupReq as any);
+    expect(validSetupRes.status).toBe(200);
+    const validSetupData = await validSetupRes.json();
+    expect(validSetupData.success).toBe(true);
+    expect(validSetupData.user.email).toBe(gammaEmail);
+    expect(validSetupData.user.status).toBe('active');
+    expect(validSetupData.client.id).toBe(gammaClient.id);
+    expect(validSetupData.client.portalAccessStatus).toBe('Active');
+
+    // Data isolation: ensure internalNotes are scrubbed
+    expect(validSetupData.client.operationalMetrics).toBeDefined();
+    expect(validSetupData.client.operationalMetrics.internalNotes).toBeUndefined();
+    expect(validSetupData.client.operationalMetrics.meetingsBooked).toBe(24);
+
+    // 6. Test returning user sign-in flow
+    const validLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: gammaEmail,
+        password: 'SecureGammaPassword2026!',
+        clientId: gammaClient.id,
+      }),
+    });
+    const validLoginRes = await authHandler(validLoginReq as any);
+    expect(validLoginRes.status).toBe(200);
+    const validLoginData = await validLoginRes.json();
+    expect(validLoginData.success).toBe(true);
+    expect(validLoginData.user.email).toBe(gammaEmail);
+    expect(validLoginData.client.operationalMetrics.internalNotes).toBeUndefined();
+  });
 });
+
 
 

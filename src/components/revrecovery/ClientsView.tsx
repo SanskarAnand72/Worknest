@@ -377,8 +377,8 @@ Your Authorized Login Email: ${email}
 
 First-Time Access:
 1. Open the portal URL above.
-2. Enter your email and chosen password to set up your account.
-3. If you have an existing Firebase account or prefer an email link, click "Forgot or need setup link?" to receive a secure password setup link.
+2. Enter your email and choose your portal password to activate your account.
+3. Once your password is set, you will enter your authorized portal dashboard directly.
 
 Best regards,
 RevRecovery Growth Team`;

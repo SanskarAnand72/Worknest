@@ -9,7 +9,7 @@ import {
 } from '@/lib/invitationRegistry';
 
 /**
- * Helper to authenticate or register user via Firebase Auth Identity Toolkit REST API
+ * Helper to authenticate returning user via Firebase Auth Identity Toolkit REST API
  */
 async function authenticateWithFirebase(
   email: string,
@@ -22,7 +22,7 @@ async function authenticateWithFirebase(
   }
 
   try {
-    // 1. Attempt Sign-In
+    // Attempt Sign-In
     const signInRes = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
       {
@@ -39,52 +39,6 @@ async function authenticateWithFirebase(
 
     const errorMsg = signInData.error?.message || '';
 
-    // If account not found or invalid credential, attempt first-time signup
-    if (
-      errorMsg === 'EMAIL_NOT_FOUND' ||
-      errorMsg === 'INVALID_LOGIN_CREDENTIALS' ||
-      errorMsg.includes('INVALID_CREDENTIAL')
-    ) {
-      const signUpRes = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password: pass, returnSecureToken: true }),
-        }
-      );
-
-      const signUpData = await signUpRes.json();
-      if (signUpRes.ok && signUpData.idToken) {
-        return { success: true };
-      }
-
-      if (signUpData.error?.message === 'EMAIL_EXISTS') {
-        return {
-          success: false,
-          error:
-            'Incorrect password for this account. If you haven\'t set a password or need to reset it, request a secure setup link below.',
-          canResetPassword: true,
-        };
-      }
-
-      if (signUpData.error?.message?.includes('WEAK_PASSWORD')) {
-        return {
-          success: false,
-          error: 'Password must be at least 6 characters long.',
-        };
-      }
-    }
-
-    if (errorMsg === 'INVALID_PASSWORD') {
-      return {
-        success: false,
-        error:
-          'Incorrect password for this account. If you haven\'t set a password or need to reset it, request a secure setup link below.',
-        canResetPassword: true,
-      };
-    }
-
     if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
       return {
         success: false,
@@ -93,7 +47,11 @@ async function authenticateWithFirebase(
       };
     }
 
-    return { success: true };
+    return {
+      success: false,
+      error: 'Incorrect password for this account.',
+      canResetPassword: true,
+    };
   } catch (err) {
     console.warn('Firebase Auth REST check fallback notice:', err);
     return { success: true };
@@ -110,6 +68,161 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { action, oobCode, newPassword, email, password, clientId } = body;
+
+    // Handle First-Time Password Setup for Invited Representatives
+    if (action === 'setupPassword') {
+      if (!email || typeof email !== 'string' || !email.includes('@')) {
+        return NextResponse.json(
+          { success: false, error: 'Please enter a valid business email address.' },
+          { status: 400 }
+        );
+      }
+
+      if (!password || typeof password !== 'string' || password.length < 6) {
+        return NextResponse.json(
+          { success: false, error: 'Password must be at least 6 characters.' },
+          { status: 400 }
+        );
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+
+      // Verify representative authorization for requested organization
+      const authCheck = checkClientOrganizationAuthorization(normalizedEmail, clientId);
+      if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: authCheck.error || 'Access Denied: Not authorized for this client organization.',
+            diagnostic: authCheck.diagnostic,
+          },
+          { status: authCheck.statusCode || 403 }
+        );
+      }
+
+      const { user: invitedUser, client, company } = authCheck;
+      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+
+      if (apiKey) {
+        // Attempt first-time account creation with user's chosen password
+        const signUpRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: normalizedEmail, password, returnSecureToken: true }),
+          }
+        );
+
+        const signUpData = await signUpRes.json();
+
+        if (signUpRes.ok && signUpData.idToken) {
+          // Account created successfully with client's chosen password
+        } else if (signUpData.error?.message === 'EMAIL_EXISTS') {
+          // Email was previously registered in Firebase Auth. Check if credentials match:
+          const signInRes = await fetch(
+            `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ email: normalizedEmail, password, returnSecureToken: true }),
+            }
+          );
+
+          const signInData = await signInRes.json();
+          if (signInRes.ok && signInData.idToken) {
+            // Password matches existing credentials
+          } else {
+            // Existing Firebase account with different password: dispatch secure verification email
+            try {
+              await fetch(
+                `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ requestType: 'PASSWORD_RESET', email: normalizedEmail }),
+                }
+              );
+            } catch (resetErr) {
+              console.warn('Auto password reset dispatch notice:', resetErr);
+            }
+
+            return NextResponse.json(
+              {
+                success: false,
+                requiresReset: true,
+                error: `An existing account was found for ${normalizedEmail}. For your security, a password setup link has been sent to your email inbox. Please click the link to confirm your password.`,
+                email: normalizedEmail,
+              },
+              { status: 400 }
+            );
+          }
+        } else {
+          const errMsg = signUpData.error?.message || 'Failed to initialize portal password.';
+          return NextResponse.json({ success: false, error: errMsg }, { status: 400 });
+        }
+      }
+
+      // User status updated to 'active' upon successful password setup
+      const updatedUser: ClientPortalUser = {
+        ...invitedUser,
+        status: 'active',
+        lastLoginAt: Date.now(),
+      };
+      registerPortalUser(updatedUser);
+
+      if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
+        client.portalAccessStatus = 'Active';
+        registerClient(client, company);
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Password set successfully. Welcome to your Client Portal!',
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+          clientId: updatedUser.clientId,
+          clientName: updatedUser.clientName || company?.name || 'Client',
+          role: updatedUser.role,
+          status: updatedUser.status,
+          lastLoginAt: updatedUser.lastLoginAt,
+        },
+        client: {
+          id: client.id,
+          companyId: client.companyId,
+          servicesPurchased: client.servicesPurchased,
+          contractStatus: client.contractStatus,
+          portalAccessStatus: client.portalAccessStatus,
+          portalSettings: client.portalSettings,
+          operationalMetrics: client.operationalMetrics ? {
+            id: client.operationalMetrics.id,
+            clientId: client.operationalMetrics.clientId,
+            reportingPeriod: client.operationalMetrics.reportingPeriod,
+            campaignStatus: client.operationalMetrics.campaignStatus,
+            targetAccounts: client.operationalMetrics.targetAccounts,
+            contactsReached: client.operationalMetrics.contactsReached,
+            totalReplies: client.operationalMetrics.totalReplies,
+            positiveReplies: client.operationalMetrics.positiveReplies,
+            qualifiedProspects: client.operationalMetrics.qualifiedProspects,
+            meetingsBooked: client.operationalMetrics.meetingsBooked,
+            meetingsCompleted: client.operationalMetrics.meetingsCompleted,
+            dealsClosed: client.operationalMetrics.dealsClosed,
+            revenueGenerated: client.operationalMetrics.revenueGenerated,
+            updatedBy: client.operationalMetrics.updatedBy,
+            updatedAt: client.operationalMetrics.updatedAt,
+            createdAt: client.operationalMetrics.createdAt,
+          } : undefined,
+        },
+        company: company ? {
+          id: company.id,
+          name: company.name,
+          website: company.website,
+          industry: company.industry,
+        } : null,
+      });
+    }
 
     // Handle OOB Password Reset Completion
     if (action === 'resetPassword') {
@@ -178,7 +291,7 @@ export async function POST(req: NextRequest) {
       };
       registerPortalUser(updatedUser);
 
-      if (client.portalAccessStatus === 'Invitation Pending') {
+      if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
         client.portalAccessStatus = 'Active';
         registerClient(client, company);
       }
@@ -268,7 +381,7 @@ export async function POST(req: NextRequest) {
     };
     registerPortalUser(updatedUser);
 
-    if (client.portalAccessStatus === 'Invitation Pending') {
+    if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
       client.portalAccessStatus = 'Active';
       registerClient(client, company);
     }
