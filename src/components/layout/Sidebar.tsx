@@ -39,6 +39,7 @@ import {
   Plug,
   Users,
   Flame,
+  Shield,
 } from 'lucide-react';
 import { TemplatesModal } from '@/components/modals/TemplatesModal';
 import { SettingsModal } from '@/components/modals/SettingsModal';
@@ -154,6 +155,7 @@ export const Sidebar: React.FC = () => {
       badge: overdueFollowupsCount > 0 ? `${overdueFollowupsCount} due` : undefined,
     },
     { id: 'clients', label: 'Clients', icon: <Briefcase className="w-4 h-4 text-blue-500" />, badge: clients.length },
+    { id: 'client-portal', label: 'Client Portal', icon: <Shield className="w-4 h-4 text-sky-400" /> },
     { id: 'projects', label: 'Projects', icon: <FolderGit2 className="w-4 h-4 text-purple-500" /> },
     {
       id: 'tasks',

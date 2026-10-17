@@ -16,6 +16,7 @@ import {
   OutreachSourceConfig,
   CustomModule,
   CustomRecord,
+  ClientPortalUser,
 } from '@/types/revrecovery';
 import { Page } from '@/types';
 
@@ -50,6 +51,7 @@ export const SEED_COMPANIES: Company[] = [];
 export const SEED_CONTACTS: Contact[] = [];
 export const SEED_LEADS: LeadDeal[] = [];
 export const SEED_CLIENTS: Client[] = [];
+export const SEED_CLIENT_PORTAL_USERS: ClientPortalUser[] = [];
 export const SEED_PROJECTS: Project[] = [];
 export const SEED_TASKS: RevTask[] = [];
 export const SEED_MEETINGS: Meeting[] = [];

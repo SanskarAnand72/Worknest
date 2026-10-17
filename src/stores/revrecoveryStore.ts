@@ -24,6 +24,9 @@ import {
   OutreachSourceConfig,
   CustomModule,
   CustomRecord,
+  ClientPortalSettings,
+  ClientRole,
+  ClientPortalUser,
   normalizeRole,
 } from '@/types/revrecovery';
 import {
@@ -51,6 +54,7 @@ interface RevRecoveryState {
   contacts: Contact[];
   leads: LeadDeal[];
   clients: Client[];
+  clientPortalUsers: ClientPortalUser[];
   projects: Project[];
   tasks: RevTask[];
   meetings: Meeting[];
@@ -66,6 +70,12 @@ interface RevRecoveryState {
   customRecords: CustomRecord[];
   selectedCustomModuleId: string | null;
   selectedCustomRecordId: string | null;
+
+  // Client Portal & Isolated Experience State
+  portalClientId: string | null;
+  portalClientUser: ClientPortalUser | null;
+  isClientPortalMode: boolean;
+  portalDateFilter: 'today' | 'week' | 'month' | 'quarter' | 'all';
 
   // UI Filters
   selectedTeamMemberFilter: string; // 'all' or teamMember name
@@ -118,6 +128,37 @@ interface RevRecoveryState {
     clientId: string,
     questionnaire: Partial<ClientDiscoveryQuestionnaire>
   ) => Promise<void>;
+
+  // Client Portal & Isolated Experience Actions
+  setPortalClientId: (clientId: string | null) => void;
+  setPortalClientUser: (user: ClientPortalUser | null) => void;
+  setIsClientPortalMode: (mode: boolean) => void;
+  setPortalDateFilter: (filter: 'today' | 'week' | 'month' | 'quarter' | 'all') => void;
+  inviteClientPortalUser: (clientId: string, data: { email: string; name: string; role?: ClientRole }) => Promise<{ user: ClientPortalUser; inviteLink: string }>;
+  updateClientPortalUserRole: (id: string, role: ClientRole) => Promise<void>;
+  revokeClientPortalUser: (id: string) => Promise<void>;
+  deleteClientPortalUser: (id: string) => Promise<void>;
+  updateClientPortalSettings: (clientId: string, settings: Partial<ClientPortalSettings>) => Promise<void>;
+  getClientPortalData: (clientId: string, dateFilter?: 'today' | 'week' | 'month' | 'quarter' | 'all') => {
+    client: Client | null;
+    company: Company | null;
+    settings: ClientPortalSettings;
+    metrics: {
+      leadsGenerated: number;
+      outreachSent: number;
+      repliesReceived: number;
+      qualifiedProspects: number;
+      meetingsBooked: number;
+      meetingsCompleted: number;
+      conversions: number;
+      conversionRate: number;
+    };
+    leads: LeadDeal[];
+    meetings: Meeting[];
+    projects: Project[];
+    activities: LeadActivity[];
+    sharedDocuments: Array<{ id: string; title: string; type: string; url?: string; updatedAt: number }>;
+  };
 
   // Project Actions
   addProject: (data: Partial<Project>) => Promise<Project>;
@@ -208,6 +249,7 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   contacts: [],
   leads: [],
   clients: [],
+  clientPortalUsers: [],
   projects: [],
   tasks: [],
   meetings: [],
@@ -232,6 +274,12 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   selectedCustomModuleId: null,
   selectedCustomRecordId: null,
 
+  // Client Portal & Isolated Experience State
+  portalClientId: null,
+  portalClientUser: null,
+  isClientPortalMode: false,
+  portalDateFilter: 'all',
+
   selectedTeamMemberFilter: 'all',
   dateRangeFilter: 'all',
 
@@ -245,6 +293,7 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
         contacts: data.contacts,
         leads: data.leads,
         clients: data.clients,
+        clientPortalUsers: data.clientPortalUsers || [],
         projects: data.projects,
         tasks: data.tasks,
         meetings: data.meetings,
@@ -278,6 +327,15 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   setSelectedMeetingId: (id) => set({ selectedMeetingId: id }),
   setTeamMemberFilter: (filter) => set({ selectedTeamMemberFilter: filter }),
   setDateRangeFilter: (range) => set({ dateRangeFilter: range }),
+  setPortalClientId: (clientId) => set({ portalClientId: clientId }),
+  setPortalClientUser: (user) =>
+    set({
+      portalClientUser: user,
+      isClientPortalMode: !!user,
+      portalClientId: user ? user.clientId : get().portalClientId,
+    }),
+  setIsClientPortalMode: (mode) => set({ isClientPortalMode: mode }),
+  setPortalDateFilter: (filter) => set({ portalDateFilter: filter }),
 
   // Company Actions
   addCompany: async (data) => {
@@ -390,6 +448,7 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     const newLead: LeadDeal = {
       id: generateId(),
       companyId: data.companyId || '',
+      clientId: data.clientId,
       primaryContactId: data.primaryContactId,
       title: data.title || 'New Outbound Opportunity',
       stage: data.stage || 'New',
@@ -639,6 +698,255 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     };
 
     await get().updateClient(clientId, { discoveryQuestionnaire: updatedQ });
+  },
+
+  // Client Portal & Isolated Experience Actions
+  inviteClientPortalUser: async (clientId, data) => {
+    const client = get().clients.find((c) => c.id === clientId);
+    const company = client ? get().companies.find((comp) => comp.id === client.companyId) : null;
+    const clientName = company?.name || 'Client';
+
+    const newUser: ClientPortalUser = {
+      id: generateId(),
+      email: data.email.trim().toLowerCase(),
+      name: data.name.trim(),
+      clientId,
+      clientName,
+      role: data.role || 'client_admin',
+      status: 'active',
+      invitedBy: 'Sanskar Anand',
+      invitedAt: Date.now(),
+      createdAt: Date.now(),
+    };
+
+    const updatedUsers = [newUser, ...get().clientPortalUsers];
+    set({ clientPortalUsers: updatedUsers });
+    await saveEntityToRevDB('clientPortalUsers', newUser);
+
+    if (client) {
+      const existingUserIds = client.portalUserIds || [];
+      if (!existingUserIds.includes(newUser.id)) {
+        await get().updateClient(clientId, {
+          portalUserIds: [...existingUserIds, newUser.id],
+        });
+      }
+    }
+
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const inviteLink = `${origin}/?portalClientId=${clientId}&portalEmail=${encodeURIComponent(newUser.email)}`;
+    return { user: newUser, inviteLink };
+  },
+
+  updateClientPortalUserRole: async (id, role) => {
+    const updated = get().clientPortalUsers.map((u) =>
+      u.id === id ? { ...u, role } : u
+    );
+    set({ clientPortalUsers: updated });
+    const target = updated.find((u) => u.id === id);
+    if (target) await saveEntityToRevDB('clientPortalUsers', target);
+  },
+
+  revokeClientPortalUser: async (id) => {
+    const updated = get().clientPortalUsers.map((u) =>
+      u.id === id ? { ...u, status: 'revoked' as const } : u
+    );
+    set({ clientPortalUsers: updated });
+    const target = updated.find((u) => u.id === id);
+    if (target) await saveEntityToRevDB('clientPortalUsers', target);
+  },
+
+  deleteClientPortalUser: async (id) => {
+    const user = get().clientPortalUsers.find((u) => u.id === id);
+    const updated = get().clientPortalUsers.filter((u) => u.id !== id);
+    set({ clientPortalUsers: updated });
+    await deleteEntityFromRevDB('clientPortalUsers', id);
+
+    if (user?.clientId) {
+      const client = get().clients.find((c) => c.id === user.clientId);
+      if (client?.portalUserIds) {
+        await get().updateClient(client.id, {
+          portalUserIds: client.portalUserIds.filter((uid) => uid !== id),
+        });
+      }
+    }
+  },
+
+  updateClientPortalSettings: async (clientId, settings) => {
+    const client = get().clients.find((c) => c.id === clientId);
+    if (!client) return;
+
+    const currentSettings: ClientPortalSettings = client.portalSettings || {
+      enabled: true,
+      allowedMetrics: ['leads', 'outreach', 'replies', 'qualified', 'meetings', 'conversions'],
+      allowedTabs: ['overview', 'campaigns', 'meetings', 'projects', 'documents'],
+      kpiTargets: {},
+      sharedDocIds: [],
+    };
+
+    const updatedSettings: ClientPortalSettings = {
+      ...currentSettings,
+      ...settings,
+      kpiTargets: {
+        ...currentSettings.kpiTargets,
+        ...(settings.kpiTargets || {}),
+      },
+    };
+
+    await get().updateClient(clientId, { portalSettings: updatedSettings });
+  },
+
+  getClientPortalData: (clientId, dateFilter = 'all') => {
+    const client = get().clients.find((c) => c.id === clientId) || null;
+    const company = client ? get().companies.find((comp) => comp.id === client.companyId) || null : null;
+
+    const defaultSettings: ClientPortalSettings = {
+      enabled: true,
+      allowedMetrics: ['leads', 'outreach', 'replies', 'qualified', 'meetings', 'conversions'],
+      allowedTabs: ['overview', 'campaigns', 'meetings', 'projects', 'documents'],
+      kpiTargets: {
+        monthlyOutreach: 500,
+        monthlyLeads: 250,
+        monthlyQualified: 30,
+        monthlyMeetings: 15,
+        targetConversionRate: 5.0,
+      },
+      sharedDocIds: [],
+    };
+
+    const settings: ClientPortalSettings = client?.portalSettings || defaultSettings;
+
+    // Date filtering helper
+    const now = Date.now();
+    const isWithinDate = (timestamp: number | string | undefined): boolean => {
+      if (!timestamp) return false;
+      const time = typeof timestamp === 'string' ? new Date(timestamp).getTime() : timestamp;
+      if (isNaN(time)) return false;
+      if (dateFilter === 'all') return true;
+      if (dateFilter === 'today') {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return time >= today.getTime();
+      }
+      if (dateFilter === 'week') return time >= now - 7 * 86400000;
+      if (dateFilter === 'month') return time >= now - 30 * 86400000;
+      if (dateFilter === 'quarter') return time >= now - 90 * 86400000;
+      return true;
+    };
+
+    // Client-isolated leads (internal notes sanitized)
+    const rawLeads = get().leads.filter(
+      (l) => (l.clientId === clientId || (client?.companyId && l.companyId === client.companyId)) && isWithinDate(l.createdAt || l.nextFollowUpDate)
+    );
+    const isolatedLeads: LeadDeal[] = rawLeads.map((l) => ({
+      ...l,
+      notes: '', // Strictly hide internal notes
+      customFields: {},
+    }));
+
+    // Client-isolated activities (internal notes sanitized)
+    const rawActivities = get().activities.filter(
+      (a) => (a.clientId === clientId || (client?.companyId && a.companyId === client.companyId)) && isWithinDate(a.createdAt)
+    );
+    const isolatedActivities: LeadActivity[] = rawActivities.map((a) => ({
+      ...a,
+      notes: undefined, // Strictly hide internal notes
+      metadata: undefined,
+    }));
+
+    // Client-isolated meetings (internal notes sanitized)
+    const rawMeetings = get().meetings.filter(
+      (m) => (m.relatedClientId === clientId || (client?.companyId && m.relatedCompanyId === client.companyId)) && isWithinDate(m.date)
+    );
+    const isolatedMeetings: Meeting[] = rawMeetings.map((m) => ({
+      ...m,
+      notes: '', // Strictly hide internal notes
+      decisions: '',
+      actionItems: (m.actionItems || []).map((ai) => ({ ...ai })),
+    }));
+
+    // Client-isolated delivery projects (team internal tasks strictly omitted)
+    const rawProjects = get().projects.filter((p) => p.clientId === clientId);
+    const isolatedProjects: Project[] = rawProjects.map((p) => ({
+      ...p,
+    }));
+
+    // Metrics calculations from real stored records
+    const outreachFromActivities = rawActivities.filter(
+      (a) => a.type === 'message_sent' || a.type === 'connection_request_sent'
+    ).length;
+    const outreachFromLeads = rawLeads.filter(
+      (l) => l.connectionStatus === 'Sent' || l.connectionStatus === 'Accepted' || l.messageStatus === 'Sent' || l.messageStatus === 'Replied'
+    ).length;
+    const outreachSent = Math.max(outreachFromActivities, outreachFromLeads);
+
+    const repliesFromActivities = rawActivities.filter(
+      (a) => a.type === 'reply_received' || a.type === 'positive_reply'
+    ).length;
+    const repliesFromLeads = rawLeads.filter(
+      (l) => l.messageStatus === 'Replied' || l.isPositiveReply || Boolean(l.lastReplyDate)
+    ).length;
+    const repliesReceived = Math.max(repliesFromActivities, repliesFromLeads);
+
+    const leadsGenerated = rawLeads.length;
+
+    const qualifiedProspects = rawLeads.filter((l) =>
+      ['Qualified', 'Interested', 'Meeting Booked', 'Meeting Completed', 'Proposal Sent', 'Won'].includes(l.stage)
+    ).length;
+
+    const meetingsBookedFromList = rawMeetings.filter((m) => m.outcome === 'Scheduled' || m.outcome === 'Completed').length;
+    const meetingsBookedFromLeads = rawLeads.filter((l) => l.meetingStatus === 'Booked' || l.meetingStatus === 'Completed' || l.stage === 'Meeting Booked' || l.stage === 'Meeting Completed').length;
+    const meetingsBooked = Math.max(meetingsBookedFromList, meetingsBookedFromLeads);
+
+    const meetingsCompletedFromList = rawMeetings.filter((m) => m.outcome === 'Completed').length;
+    const meetingsCompletedFromLeads = rawLeads.filter((l) => l.meetingStatus === 'Completed' || l.stage === 'Meeting Completed').length;
+    const meetingsCompleted = Math.max(meetingsCompletedFromList, meetingsCompletedFromLeads);
+
+    const conversions = rawLeads.filter((l) => l.stage === 'Won' || l.dealStatus === 'Won').length;
+
+    const conversionRate = leadsGenerated > 0 ? Number(((conversions / leadsGenerated) * 100).toFixed(1)) : 0;
+
+    // Shared documents
+    const sharedDocuments = [
+      {
+        id: 'doc-kickoff',
+        title: `${company?.name || 'Client'} Outbound Campaign Strategy & Protocol`,
+        type: 'Strategy Deck',
+        updatedAt: client?.createdAt || Date.now(),
+      },
+      {
+        id: 'doc-icp',
+        title: 'Ideal Customer Profile (ICP) & Targeting Criteria',
+        type: 'Specification',
+        updatedAt: client?.updatedAt || Date.now(),
+      },
+      {
+        id: 'doc-report-latest',
+        title: 'Monthly Campaign Performance & Meeting Attribution Summary',
+        type: 'Executive Report',
+        updatedAt: Date.now() - 86400000 * 2,
+      },
+    ];
+
+    return {
+      client,
+      company,
+      settings,
+      metrics: {
+        leadsGenerated,
+        outreachSent,
+        repliesReceived,
+        qualifiedProspects,
+        meetingsBooked,
+        meetingsCompleted,
+        conversions,
+        conversionRate,
+      },
+      leads: isolatedLeads,
+      meetings: isolatedMeetings,
+      projects: isolatedProjects,
+      activities: isolatedActivities,
+      sharedDocuments,
+    };
   },
 
   // Project Actions
@@ -1150,6 +1458,7 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     const newActivity: LeadActivity = {
       id: generateId(),
       companyId: activityData.companyId,
+      clientId: activityData.clientId,
       leadId: activityData.leadId,
       contactId: activityData.contactId,
       type: activityData.type,

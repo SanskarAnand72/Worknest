@@ -2,28 +2,55 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // Authentication Helper
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    function isWorkspaceMember(workspaceId) {
+    // Retrieve authenticated user's workspace member record
+    function getMember(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
+    }
+
+    function isRegisteredMember(workspaceId) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    // Workspace owner / founders
+    function isWorkspaceOwner(workspaceId) {
       return isAuthenticated() && (
-        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
         (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
-        request.auth.token.workspaceId == workspaceId ||
-        workspaceId == 'ws-main'
+        (isRegisteredMember(workspaceId) && getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner'])
       );
     }
 
+    // Workspace Administrators
     function isWorkspaceAdmin(workspaceId) {
       return isAuthenticated() && (
-        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
-         get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid) ||
-        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.role in ['owner', 'co-founder', 'co-owner', 'admin'])
+        isWorkspaceOwner(workspaceId) ||
+        (isRegisteredMember(workspaceId) && getMember(workspaceId).role in ['admin'])
       );
+    }
+
+    // Internal agency/team member (full internal access)
+    function isInternalTeamMember(workspaceId) {
+      return isRegisteredMember(workspaceId) &&
+        getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner', 'admin', 'member', 'viewer'];
+    }
+
+    // Verified Client User (client_admin or client_guest)
+    function isClientUser(workspaceId) {
+      return isRegisteredMember(workspaceId) &&
+        getMember(workspaceId).role in ['client_admin', 'client_guest'];
+    }
+
+    // Client Organization Authorization Guard:
+    // Requires that the client user's registered clientId strictly matches the record's clientId
+    function isAuthorizedClient(workspaceId, clientId) {
+      return isClientUser(workspaceId) &&
+        clientId != null &&
+        getMember(workspaceId).clientId == clientId;
     }
 
     // System probe / status check - requires authenticated user, never public
@@ -39,90 +66,99 @@ service cloud.firestore {
 
     // Workspaces collection
     match /workspaces/{workspaceId} {
-      allow read: if isWorkspaceMember(workspaceId);
+      allow read: if isInternalTeamMember(workspaceId) || isClientUser(workspaceId);
       allow create: if isAuthenticated();
       allow update, delete: if isWorkspaceAdmin(workspaceId);
 
-      // Team Members in Workspace (allows user to register their own membership or admin to manage)
+      // Members Management (Prevents self-escalation or unauthorized client assignment)
       match /members/{memberId} {
-        allow read: if isWorkspaceMember(workspaceId);
-        allow write: if isWorkspaceAdmin(workspaceId) || (isAuthenticated() && memberId == request.auth.uid);
+        allow read: if isInternalTeamMember(workspaceId) || (isAuthenticated() && request.auth.uid == memberId);
+        allow create: if isWorkspaceAdmin(workspaceId) || (
+          isAuthenticated() &&
+          request.auth.uid == memberId &&
+          request.resource.data.role == 'member' &&
+          !('clientId' in request.resource.data)
+        );
+        allow update: if isWorkspaceAdmin(workspaceId) || (
+          isAuthenticated() &&
+          request.auth.uid == memberId &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.clientId == resource.data.clientId
+        );
+        allow delete: if isWorkspaceAdmin(workspaceId);
       }
 
-      // CRM Companies & Contacts
+      // Client Organization Directory
+      match /clients/{clientId} {
+        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, clientId);
+        allow write: if isWorkspaceAdmin(workspaceId) || (isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer');
+      }
+
+      // Client Portal Invited Users
+      match /clientPortalUsers/{portalUserId} {
+        allow read: if isInternalTeamMember(workspaceId) || (isClientUser(workspaceId) && isAuthorizedClient(workspaceId, resource.data.clientId));
+        allow write: if isWorkspaceAdmin(workspaceId);
+      }
+
+      // Pipeline Leads / Deals (Isolated per client organization)
+      match /leads/{leadId} {
+        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
+      }
+
+      // Outreach Activities (Isolated per client organization)
+      match /activities/{activityId} {
+        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
+      }
+
+      // Meetings (Isolated per client organization)
+      match /meetings/{meetingId} {
+        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.relatedClientId);
+        allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
+      }
+
+      // Delivery Projects & Milestones (Isolated per client organization)
+      match /projects/{projectId} {
+        allow read: if isInternalTeamMember(workspaceId) || isAuthorizedClient(workspaceId, resource.data.clientId);
+        allow write: if isInternalTeamMember(workspaceId) && getMember(workspaceId).role != 'viewer';
+      }
+
+      // ========================================================
+      // INTERNAL ONLY COLLECTIONS (Strictly forbidden to clients)
+      // ========================================================
       match /companies/{companyId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
       match /contacts/{contactId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Pipeline Leads / Deals
-      match /leads/{leadId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
-      }
-
-      // Outreach Activities
-      match /activities/{activityId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
-      }
-
-      // Clients & Onboarding
-      match /clients/{clientId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
-      }
-
-      // Projects & Milestones
-      match /projects/{projectId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
-      }
-
-      // Tasks
       match /tasks/{taskId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Meetings
-      match /meetings/{meetingId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
-      }
-
-      // Proposals & Commercials
       match /proposals/{proposalId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Content & Marketing Items
       match /contentItems/{contentId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Custom Operating Modules
       match /customModules/{moduleId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Custom Module Records
       match /customRecords/{recordId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Outreach Sources
       match /outreachSources/{sourceId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Automation Rules & Integrations
       match /automationRules/{ruleId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
       match /integrations/{integrationId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
-
-      // Pages & Notion-style docs
       match /pages/{pageId} {
-        allow read, write: if isWorkspaceMember(workspaceId);
+        allow read, write: if isInternalTeamMember(workspaceId);
       }
     }
   }

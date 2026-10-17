@@ -24,10 +24,15 @@ import {
   Eye,
   RefreshCw,
   Pencil,
+  Shield,
+  Sliders,
+  Lock,
+  Users,
 } from 'lucide-react';
 import { Client, ClientDiscoveryQuestionnaire } from '@/types/revrecovery';
 import { EditClientModal } from './EditClientModal';
 import { DeleteClientModal } from './DeleteClientModal';
+import { ClientPortalManageModal } from './ClientPortalManageModal';
 
 export const ClientsView: React.FC = () => {
   const {
@@ -43,15 +48,19 @@ export const ClientsView: React.FC = () => {
     projects,
     tasks,
     setActiveModule,
+    clientPortalUsers,
+    setPortalClientId,
+    setIsClientPortalMode,
   } = useRevRecoveryStore();
 
-  const [activeTab, setActiveTab] = useState<'overview' | 'onboarding' | 'questionnaire' | 'projects'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'onboarding' | 'questionnaire' | 'projects' | 'portal'>('overview');
   const [editingQuestionnaire, setEditingQuestionnaire] = useState(false);
   const [directoryFilter, setDirectoryFilter] = useState<'active' | 'archived'>('active');
 
   // Modals & Action State
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [portalModalOpen, setPortalModalOpen] = useState(false);
   const [actionClient, setActionClient] = useState<Client | null>(null);
   const [openMenuClientId, setOpenMenuClientId] = useState<string | null>(null);
 
@@ -249,6 +258,30 @@ export const ClientsView: React.FC = () => {
                             </button>
                             <button
                               type="button"
+                              onClick={() => {
+                                setPortalClientId(client.id);
+                                setIsClientPortalMode(true);
+                                setOpenMenuClientId(null);
+                              }}
+                              className="w-full text-left px-3 py-1.5 hover:bg-muted flex items-center gap-2 text-foreground"
+                            >
+                              <Shield className="w-3.5 h-3.5 text-sky-500" />
+                              <span>Preview Portal</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActionClient(client);
+                                setPortalModalOpen(true);
+                                setOpenMenuClientId(null);
+                              }}
+                              className="w-full text-left px-3 py-1.5 hover:bg-muted flex items-center gap-2 text-foreground"
+                            >
+                              <Sliders className="w-3.5 h-3.5 text-accent" />
+                              <span>Manage Portal</span>
+                            </button>
+                            <button
+                              type="button"
                               onClick={async () => {
                                 if (client.archived) {
                                   await restoreClient(client.id);
@@ -373,10 +406,32 @@ export const ClientsView: React.FC = () => {
                   >
                     Delivery Projects
                   </button>
+                  <button
+                    onClick={() => setActiveTab('portal')}
+                    className={`px-3 py-1 rounded-md font-medium transition-colors flex items-center gap-1.5 ${
+                      activeTab === 'portal' ? 'bg-card text-sky-500 shadow-xs font-semibold' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>Client Portal</span>
+                  </button>
                 </div>
 
                 {/* Direct Action Buttons on Detail Header */}
                 <div className="flex items-center gap-1.5 pl-2 border-l border-border">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionClient(activeClient);
+                      setPortalModalOpen(true);
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-xs font-semibold text-sky-500 shadow-xs transition-colors"
+                    title="Configure Portal Access & KPIs"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>Portal Settings</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
@@ -754,6 +809,149 @@ export const ClientsView: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              {/* TAB 5: CLIENT PORTAL CONFIGURATION & STATUS */}
+              {activeTab === 'portal' && (
+                <div className="max-w-4xl space-y-6">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-border">
+                    <div>
+                      <h3 className="text-base font-bold flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-sky-500" />
+                        <span>Client Portal Governance for {activeCompany.name}</span>
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Client-facing reporting dashboard, isolation rules, permitted widgets & representative user management
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setPortalClientId(activeClient.id);
+                          setIsClientPortalMode(true);
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-xs"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>Preview as Client</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActionClient(activeClient);
+                          setPortalModalOpen(true);
+                        }}
+                        className="px-3.5 py-1.5 rounded-xl border border-border bg-card hover:bg-muted text-xs font-semibold text-foreground flex items-center gap-1.5 transition-colors shadow-xs"
+                      >
+                        <Sliders className="w-3.5 h-3.5 text-accent" />
+                        <span>Configure Settings & Users</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Portal Status Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="p-4 rounded-xl border border-border bg-card shadow-xs space-y-1">
+                      <span className="text-xs text-muted-foreground font-medium">Portal Status</span>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`w-2.5 h-2.5 rounded-full ${
+                            activeClient.portalSettings?.enabled !== false ? 'bg-emerald-500' : 'bg-rose-500'
+                          }`}
+                        />
+                        <span className="text-base font-bold text-foreground">
+                          {activeClient.portalSettings?.enabled !== false ? 'Active & Online' : 'Paused / Inactive'}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground block pt-0.5">
+                        {activeClient.portalSettings?.enabled !== false
+                          ? 'Client users can authenticate and view metrics'
+                          : 'Client portal access is temporarily suspended'}
+                      </span>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-border bg-card shadow-xs space-y-1">
+                      <span className="text-xs text-muted-foreground font-medium">Authorized Portal Users</span>
+                      <div className="text-base font-bold text-foreground">
+                        {clientPortalUsers.filter((u) => u.clientId === activeClient.id).length} Active Representatives
+                      </div>
+                      <span className="text-[11px] text-muted-foreground block pt-0.5">
+                        Assigned to {activeCompany.name}
+                      </span>
+                    </div>
+
+                    <div className="p-4 rounded-xl border border-border bg-card shadow-xs space-y-1">
+                      <span className="text-xs text-muted-foreground font-medium">Data Isolation Mode</span>
+                      <div className="flex items-center gap-1 text-base font-bold text-sky-500">
+                        <Lock className="w-4 h-4" />
+                        <span>Client Segregated</span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground block pt-0.5">
+                        Internal notes & margins strictly hidden
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Active Client Users List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                        Invited Client Representatives
+                      </h4>
+                      <button
+                        onClick={() => {
+                          setActionClient(activeClient);
+                          setPortalModalOpen(true);
+                        }}
+                        className="text-xs text-accent hover:underline font-semibold"
+                      >
+                        + Invite New User
+                      </button>
+                    </div>
+
+                    {clientPortalUsers.filter((u) => u.clientId === activeClient.id).length === 0 ? (
+                      <div className="p-6 rounded-xl border border-dashed border-border text-center text-muted-foreground text-xs space-y-2">
+                        <Users className="w-6 h-6 mx-auto text-muted-foreground/60" />
+                        <p>No client portal users have been invited for {activeCompany.name} yet.</p>
+                        <button
+                          onClick={() => {
+                            setActionClient(activeClient);
+                            setPortalModalOpen(true);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-accent text-accent-foreground font-medium text-xs inline-flex items-center gap-1 mt-1"
+                        >
+                          Invite Client User Now
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="border border-border rounded-xl divide-y divide-border overflow-hidden bg-card">
+                        {clientPortalUsers
+                          .filter((u) => u.clientId === activeClient.id)
+                          .map((user) => (
+                            <div key={user.id} className="p-3.5 flex items-center justify-between text-xs">
+                              <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-full bg-sky-500/15 border border-sky-500/25 flex items-center justify-center font-bold text-sky-500">
+                                  {user.name.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-semibold text-foreground">{user.name}</span>
+                                    <span className="px-2 py-0.2 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-500 capitalize">
+                                      {user.role.replace('_', ' ')}
+                                    </span>
+                                  </div>
+                                  <span className="text-[11px] text-muted-foreground font-mono">{user.email}</span>
+                                </div>
+                              </div>
+                              <span className="text-[11px] text-muted-foreground">
+                                Invited {new Date(user.invitedAt).toLocaleDateString()}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -778,6 +976,16 @@ export const ClientsView: React.FC = () => {
         client={actionClient || activeClient}
         onClose={() => {
           setDeleteModalOpen(false);
+          setActionClient(null);
+        }}
+      />
+
+      <ClientPortalManageModal
+        isOpen={portalModalOpen}
+        client={actionClient || activeClient}
+        companyName={activeCompany ? activeCompany.name : 'Client'}
+        onClose={() => {
+          setPortalModalOpen(false);
           setActionClient(null);
         }}
       />

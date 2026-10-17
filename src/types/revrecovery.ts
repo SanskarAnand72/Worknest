@@ -82,6 +82,7 @@ export type MessageStatus = 'Not Contacted' | 'Sent' | 'Awaiting Reply' | 'Repli
 export interface LeadDeal {
   id: string;
   companyId: string;
+  clientId?: string;
   primaryContactId?: string;
   title: string;
   stage: LeadStage;
@@ -128,6 +129,37 @@ export interface ClientDiscoveryQuestionnaire {
   constraintsAndRequirements: string;
 }
 
+export interface ClientPortalSettings {
+  enabled: boolean;
+  allowedMetrics: ('leads' | 'outreach' | 'replies' | 'qualified' | 'meetings' | 'conversions')[];
+  allowedTabs: ('overview' | 'campaigns' | 'meetings' | 'projects' | 'documents')[];
+  kpiTargets: {
+    monthlyLeads?: number;
+    monthlyOutreach?: number;
+    monthlyMeetings?: number;
+    monthlyQualified?: number;
+    targetConversionRate?: number;
+  };
+  sharedDocIds: string[];
+  sharedNotes?: string;
+}
+
+export type ClientRole = 'client_guest' | 'client_admin';
+
+export interface ClientPortalUser {
+  id: string;
+  email: string;
+  name: string;
+  clientId: string;
+  clientName?: string;
+  role: ClientRole;
+  status: 'active' | 'invited' | 'pending' | 'revoked';
+  invitedBy: string;
+  invitedAt: number;
+  lastLoginAt?: number;
+  createdAt: number;
+}
+
 export interface Client {
   id: string;
   companyId: string;
@@ -145,6 +177,8 @@ export interface Client {
   onboardingChecklist: OnboardingChecklistItem[];
   discoveryQuestionnaire: ClientDiscoveryQuestionnaire;
   notes: string;
+  portalSettings?: ClientPortalSettings;
+  portalUserIds?: string[];
   archived?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -370,6 +404,7 @@ export type ActivityType =
 export interface LeadActivity {
   id: string;
   companyId: string;
+  clientId?: string;
   leadId?: string;
   contactId?: string;
   type: ActivityType;

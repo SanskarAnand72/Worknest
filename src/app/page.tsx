@@ -23,6 +23,7 @@ import { TeamView } from '@/components/revrecovery/TeamView';
 import { SettingsView } from '@/components/revrecovery/SettingsView';
 import { SopsWikiView } from '@/components/revrecovery/SopsWikiView';
 import { CustomModuleView } from '@/components/revrecovery/CustomModuleView';
+import { ClientPortalView } from '@/components/revrecovery/ClientPortalView';
 
 export default function Home() {
   const {
@@ -38,12 +39,36 @@ export default function Home() {
     init: initRevRecovery,
     activeModule,
     customModules,
+    isClientPortalMode,
+    setIsClientPortalMode,
+    setPortalClientId,
+    clientPortalUsers,
+    setPortalClientUser,
   } = useRevRecoveryStore();
 
   useEffect(() => {
     initWorkspace();
-    initRevRecovery();
-  }, [initWorkspace, initRevRecovery]);
+    initRevRecovery().then(() => {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const urlClientId = params.get('portalClientId');
+        const urlEmail = params.get('portalEmail');
+        if (urlClientId) {
+          setPortalClientId(urlClientId);
+          setIsClientPortalMode(true);
+          if (urlEmail) {
+            const users = useRevRecoveryStore.getState().clientPortalUsers;
+            const matched = users.find(
+              (u) => u.clientId === urlClientId && u.email.toLowerCase() === urlEmail.toLowerCase()
+            );
+            if (matched) {
+              setPortalClientUser(matched);
+            }
+          }
+        }
+      }
+    });
+  }, [initWorkspace, initRevRecovery, setPortalClientId, setIsClientPortalMode, setPortalClientUser]);
 
   if (!isWorkspaceInitialized || !isRevInitialized) {
     return (
@@ -63,6 +88,14 @@ export default function Home() {
     activePage?.type === 'database'
       ? Object.values(databases).find((db) => db.pageId === activePage.id)
       : null;
+
+  if (isClientPortalMode || activeModule === 'client-portal') {
+    return (
+      <div className="flex h-screen w-screen overflow-hidden bg-background">
+        <ClientPortalView />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-background">

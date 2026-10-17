@@ -17,12 +17,14 @@ import {
   OutreachSourceConfig,
   CustomModule,
   CustomRecord,
+  ClientPortalUser,
 } from '@/types/revrecovery';
 import {
   SEED_COMPANIES,
   SEED_CONTACTS,
   SEED_LEADS,
   SEED_CLIENTS,
+  SEED_CLIENT_PORTAL_USERS,
   SEED_PROJECTS,
   SEED_TASKS,
   SEED_MEETINGS,
@@ -44,6 +46,7 @@ export interface RevRecoveryDB extends DBSchema {
   contacts: { key: string; value: Contact };
   leads: { key: string; value: LeadDeal };
   clients: { key: string; value: Client };
+  clientPortalUsers: { key: string; value: ClientPortalUser };
   projects: { key: string; value: Project };
   tasks: { key: string; value: RevTask };
   meetings: { key: string; value: Meeting };
@@ -60,7 +63,7 @@ export interface RevRecoveryDB extends DBSchema {
 }
 
 const DB_NAME = 'revrecovery_os_v2';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<RevRecoveryDB>> | null = null;
 
@@ -73,6 +76,7 @@ export function getRevDB() {
         if (!db.objectStoreNames.contains('contacts')) db.createObjectStore('contacts', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('leads')) db.createObjectStore('leads', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('clients')) db.createObjectStore('clients', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('clientPortalUsers')) db.createObjectStore('clientPortalUsers', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('projects')) db.createObjectStore('projects', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('tasks')) db.createObjectStore('tasks', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('meetings')) db.createObjectStore('meetings', { keyPath: 'id' });
@@ -97,6 +101,7 @@ export interface RevRecoveryDataBundle {
   contacts: Contact[];
   leads: LeadDeal[];
   clients: Client[];
+  clientPortalUsers: ClientPortalUser[];
   projects: Project[];
   tasks: RevTask[];
   meetings: Meeting[];
@@ -155,6 +160,7 @@ export async function fetchRevRecoveryData(): Promise<RevRecoveryDataBundle> {
       contacts: SEED_CONTACTS,
       leads: SEED_LEADS,
       clients: SEED_CLIENTS,
+      clientPortalUsers: SEED_CLIENT_PORTAL_USERS,
       projects: SEED_PROJECTS,
       tasks: SEED_TASKS,
       meetings: SEED_MEETINGS,
@@ -179,6 +185,7 @@ export async function fetchRevRecoveryData(): Promise<RevRecoveryDataBundle> {
     let contacts = await db.getAll('contacts');
     let leads = await db.getAll('leads');
     let clients = await db.getAll('clients');
+    let clientPortalUsers = await db.getAll('clientPortalUsers');
     let projects = await db.getAll('projects');
     let tasks = await db.getAll('tasks');
     let meetings = await db.getAll('meetings');
@@ -242,6 +249,7 @@ export async function fetchRevRecoveryData(): Promise<RevRecoveryDataBundle> {
       contacts,
       leads,
       clients,
+      clientPortalUsers,
       projects,
       tasks,
       meetings,
@@ -263,6 +271,7 @@ export async function fetchRevRecoveryData(): Promise<RevRecoveryDataBundle> {
       contacts: SEED_CONTACTS,
       leads: SEED_LEADS,
       clients: SEED_CLIENTS,
+      clientPortalUsers: SEED_CLIENT_PORTAL_USERS,
       projects: SEED_PROJECTS,
       tasks: SEED_TASKS,
       meetings: SEED_MEETINGS,
