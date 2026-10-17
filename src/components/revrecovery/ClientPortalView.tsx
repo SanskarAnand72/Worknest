@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Clock,
+  DollarSign,
   ExternalLink,
   Eye,
   FileText,
@@ -188,13 +189,19 @@ export const ClientPortalView: React.FC = () => {
             {company.name.charAt(0)}
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-base font-bold text-foreground">{company.name} Client Portal</h1>
               <span className="px-2 py-0.5 text-[10px] rounded-full bg-emerald-500/15 text-emerald-500 font-semibold font-mono">
                 RevRecovery Verified
               </span>
+              <span className="px-2 py-0.5 text-[10px] rounded-full bg-sky-500/15 text-sky-500 font-semibold font-mono">
+                Status: {portalData?.campaignStatus || 'Active'}
+              </span>
+              <span className="px-2 py-0.5 text-[10px] rounded-full bg-muted text-muted-foreground font-mono">
+                Period: {portalData?.reportingPeriod || 'Current Period'}
+              </span>
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground mt-0.5">
               {company.industry} • Outbound Pipeline & Executive Meeting Dashboard
             </p>
           </div>
@@ -301,88 +308,136 @@ export const ClientPortalView: React.FC = () => {
               </div>
             )}
 
-            {/* 6 Real Metric Cards */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+            {/* Configurable Real Metric Cards (Filtered by Client Permissions) */}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 sm:gap-4">
               {/* Card 1: Leads Generated */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Leads Sourced</span>
-                  <Users className="w-3.5 h-3.5 text-blue-500" />
+              {(settings?.allowedMetrics?.includes('leads') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Target Accounts / Leads</span>
+                    <Users className="w-3.5 h-3.5 text-blue-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">{metrics.leadsGenerated}</div>
+                  <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
+                    <span>ICP Target:</span>
+                    <span className="font-semibold text-foreground">{leadsTarget}</span>
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">{metrics.leadsGenerated}</div>
-                <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
-                  <span>ICP Target:</span>
-                  <span className="font-semibold text-foreground">{leadsTarget}</span>
-                </div>
-              </div>
+              )}
 
               {/* Card 2: Outreach Sent */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Outreach Sent</span>
-                  <Mail className="w-3.5 h-3.5 text-purple-500" />
+              {(settings?.allowedMetrics?.includes('outreach') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Contacts Reached</span>
+                    <Mail className="w-3.5 h-3.5 text-purple-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">{metrics.outreachSent}</div>
+                  <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
+                    <span>Target:</span>
+                    <span className="font-semibold text-foreground">{outreachTarget}</span>
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">{metrics.outreachSent}</div>
-                <div className="text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
-                  <span>Target:</span>
-                  <span className="font-semibold text-foreground">{outreachTarget}</span>
-                </div>
-              </div>
+              )}
 
               {/* Card 3: Replies Received */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Replies</span>
-                  <MessageSquare className="w-3.5 h-3.5 text-cyan-500" />
+              {(settings?.allowedMetrics?.includes('replies') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Total Replies</span>
+                    <MessageSquare className="w-3.5 h-3.5 text-cyan-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">{metrics.repliesReceived}</div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    {metrics.positiveReplies !== undefined && metrics.positiveReplies > 0 ? (
+                      <span className="text-emerald-500 font-semibold">{metrics.positiveReplies} positive responses</span>
+                    ) : metrics.outreachSent > 0 ? (
+                      `${((metrics.repliesReceived / metrics.outreachSent) * 100).toFixed(1)}% reply rate`
+                    ) : (
+                      'Awaiting responses'
+                    )}
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">{metrics.repliesReceived}</div>
-                <div className="text-[11px] text-muted-foreground mt-1">
-                  {metrics.outreachSent > 0
-                    ? `${((metrics.repliesReceived / metrics.outreachSent) * 100).toFixed(1)}% reply rate`
-                    : 'Awaiting responses'}
-                </div>
-              </div>
+              )}
 
               {/* Card 4: Qualified Prospects */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Qualified</span>
-                  <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+              {(settings?.allowedMetrics?.includes('qualified') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Qualified Prospects</span>
+                    <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">{metrics.qualifiedProspects}</div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    <span>{qualifiedTarget} monthly goal</span>
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">{metrics.qualifiedProspects}</div>
-                <div className="text-[11px] text-muted-foreground mt-1">
-                  <span>{qualifiedTarget} monthly goal</span>
-                </div>
-              </div>
+              )}
 
               {/* Card 5: Meetings Booked / Held */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Meetings</span>
-                  <PhoneCall className="w-3.5 h-3.5 text-pink-500" />
+              {(settings?.allowedMetrics?.includes('meetings') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Meetings</span>
+                    <PhoneCall className="w-3.5 h-3.5 text-pink-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">
+                    {metrics.meetingsBooked}
+                    <span className="text-xs text-muted-foreground font-normal ml-1">
+                      ({metrics.meetingsCompleted} held)
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    <span>Target: {meetingsTarget}</span>
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">
-                  {metrics.meetingsBooked}
-                  <span className="text-xs text-muted-foreground font-normal ml-1">
-                    ({metrics.meetingsCompleted} held)
-                  </span>
-                </div>
-                <div className="text-[11px] text-muted-foreground mt-1">
-                  <span>Target: {meetingsTarget}</span>
-                </div>
-              </div>
+              )}
 
               {/* Card 6: Conversions & Rate */}
-              <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
-                <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
-                  <span>Conversions</span>
-                  <Flame className="w-3.5 h-3.5 text-amber-500" />
+              {(settings?.allowedMetrics?.includes('conversions') ?? true) && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Conversions</span>
+                    <Flame className="w-3.5 h-3.5 text-amber-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-foreground">{metrics.conversions}</div>
+                  <div className="text-[11px] text-emerald-500 font-semibold mt-1">
+                    {metrics.conversionRate}% win rate
+                  </div>
                 </div>
-                <div className="text-2xl font-bold font-mono text-foreground">{metrics.conversions}</div>
-                <div className="text-[11px] text-emerald-500 font-semibold mt-1">
-                  {metrics.conversionRate}% win rate
+              )}
+
+              {/* Card 7: Deals Closed (When Enabled) */}
+              {settings?.allowedMetrics?.includes('deals') && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Deals Closed</span>
+                    <Briefcase className="w-3.5 h-3.5 text-emerald-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-emerald-500">
+                    {metrics.dealsClosed ?? metrics.conversions}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    <span>Verified customer wins</span>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {/* Card 8: Revenue Generated (When Enabled) */}
+              {settings?.allowedMetrics?.includes('revenue') && (
+                <div className="p-4 rounded-2xl border border-border bg-card shadow-xs">
+                  <div className="flex items-center justify-between text-muted-foreground text-xs mb-1">
+                    <span>Revenue Generated</span>
+                    <DollarSign className="w-3.5 h-3.5 text-amber-500" />
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-amber-500">
+                    ${(metrics.revenueGenerated ?? 0).toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    <span>Attributed pipeline revenue</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Performance vs Agreed Monthly KPIs */}

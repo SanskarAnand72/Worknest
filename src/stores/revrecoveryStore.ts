@@ -28,6 +28,8 @@ import {
   ClientRole,
   ClientPortalUser,
   normalizeRole,
+  ClientOperationalMetrics,
+  PortalAccessStatus,
 } from '@/types/revrecovery';
 import {
   fetchRevRecoveryData,
@@ -120,6 +122,7 @@ interface RevRecoveryState {
   // Client Actions
   addClient: (data: Partial<Client>) => Promise<Client>;
   updateClient: (id: string, updates: Partial<Client>) => Promise<void>;
+  updateClientOperationalMetrics: (clientId: string, metrics: Partial<ClientOperationalMetrics>) => Promise<void>;
   archiveClient: (id: string) => Promise<void>;
   restoreClient: (id: string) => Promise<void>;
   deleteClient: (id: string) => Promise<void>;
@@ -135,6 +138,7 @@ interface RevRecoveryState {
   setIsClientPortalMode: (mode: boolean) => void;
   setPortalDateFilter: (filter: 'today' | 'week' | 'month' | 'quarter' | 'all') => void;
   inviteClientPortalUser: (clientId: string, data: { email: string; name: string; role?: ClientRole }) => Promise<{ user: ClientPortalUser; inviteLink: string }>;
+  resendClientPortalInvitation: (id: string) => Promise<{ inviteLink: string }>;
   updateClientPortalUserRole: (id: string, role: ClientRole) => Promise<void>;
   revokeClientPortalUser: (id: string) => Promise<void>;
   deleteClientPortalUser: (id: string) => Promise<void>;
@@ -143,15 +147,23 @@ interface RevRecoveryState {
     client: Client | null;
     company: Company | null;
     settings: ClientPortalSettings;
+    campaignStatus?: string;
+    reportingPeriod?: string;
+    operationalMetrics?: Partial<ClientOperationalMetrics>;
     metrics: {
       leadsGenerated: number;
       outreachSent: number;
       repliesReceived: number;
+      positiveReplies?: number;
       qualifiedProspects: number;
       meetingsBooked: number;
       meetingsCompleted: number;
       conversions: number;
       conversionRate: number;
+      dealsClosed?: number;
+      revenueGenerated?: number;
+      targetAccounts?: number;
+      contactsReached?: number;
     };
     leads: LeadDeal[];
     meetings: Meeting[];
@@ -514,10 +526,17 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
       return existingClient;
     }
 
+    const contact = lead.primaryContactId ? get().contacts.find((c) => c.id === lead.primaryContactId) : null;
+    const currentMonthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const clientId = generateId();
+
     const newClient: Client = {
-      id: generateId(),
+      id: clientId,
       companyId: company.id,
       primaryContactId: lead.primaryContactId,
+      contactEmail: contact?.email || '',
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
       servicesPurchased: ['Lead Research & Verification', 'Outbound Outreach', 'Discovery Call Booking'],
       commercialTerms: `$${lead.value.toLocaleString()}/mo retainer commitment`,
       contractStatus: 'Active',
@@ -527,6 +546,25 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
       accountOwner: lead.assignedTo || 'Sarah Jenkins',
       currentObjectives: `Deliver qualified discovery calls for ${company.name}`,
       successMetrics: 'Minimum 15 verified meetings/month with 85%+ ICP accuracy.',
+      operationalMetrics: {
+        id: generateId(),
+        clientId,
+        reportingPeriod: currentMonthYear,
+        campaignStatus: 'Active',
+        targetAccounts: 0,
+        contactsReached: 0,
+        totalReplies: 0,
+        positiveReplies: 0,
+        qualifiedProspects: 0,
+        meetingsBooked: 0,
+        meetingsCompleted: 0,
+        dealsClosed: 0,
+        revenueGenerated: 0,
+        internalNotes: '',
+        updatedBy: lead.assignedTo || 'Sarah Jenkins',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
       onboardingChecklist: [
         { id: generateId(), title: 'Prospect converted to client record', completed: true, completedAt: Date.now() },
         { id: generateId(), title: 'Onboarding checklist created & assigned', completed: true, completedAt: Date.now() },
@@ -589,10 +627,17 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
 
   // Client Actions
   addClient: async (data) => {
+    const clientId = generateId();
+    const contact = data.primaryContactId ? get().contacts.find((c) => c.id === data.primaryContactId) : null;
+    const currentMonthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
     const newClient: Client = {
-      id: generateId(),
+      id: clientId,
       companyId: data.companyId || '',
       primaryContactId: data.primaryContactId,
+      contactEmail: data.contactEmail || contact?.email || '',
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
       servicesPurchased: data.servicesPurchased || ['Lead Research', 'Outbound Outreach'],
       commercialTerms: data.commercialTerms || '$5,000/mo retainer',
       contractStatus: data.contractStatus || 'Active',
@@ -602,6 +647,25 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
       accountOwner: data.accountOwner || 'Sarah Jenkins',
       currentObjectives: data.currentObjectives || '',
       successMetrics: data.successMetrics || '',
+      operationalMetrics: data.operationalMetrics || {
+        id: generateId(),
+        clientId,
+        reportingPeriod: currentMonthYear,
+        campaignStatus: 'Active',
+        targetAccounts: 0,
+        contactsReached: 0,
+        totalReplies: 0,
+        positiveReplies: 0,
+        qualifiedProspects: 0,
+        meetingsBooked: 0,
+        meetingsCompleted: 0,
+        dealsClosed: 0,
+        revenueGenerated: 0,
+        internalNotes: '',
+        updatedBy: data.accountOwner || 'Sarah Jenkins',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
       onboardingChecklist: data.onboardingChecklist || [
         { id: generateId(), title: 'Prospect converted to client record', completed: true, completedAt: Date.now() },
         { id: generateId(), title: 'Onboarding checklist created & assigned', completed: true, completedAt: Date.now() },
@@ -633,6 +697,59 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     set({ clients: updated });
     await saveEntityToRevDB('clients', newClient);
     return newClient;
+  },
+
+  updateClientOperationalMetrics: async (clientId, metricsUpdates) => {
+    const client = get().clients.find((c) => c.id === clientId);
+    if (!client) return;
+
+    const cleanNum = (val: unknown, fallback = 0) => {
+      const parsed = typeof val === 'number' ? val : Number(val);
+      return isNaN(parsed) || parsed < 0 ? fallback : Math.round(parsed * 100) / 100;
+    };
+
+    const currentMonthYear = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    const current = client.operationalMetrics || {
+      id: generateId(),
+      clientId,
+      reportingPeriod: currentMonthYear,
+      campaignStatus: 'Active' as const,
+      targetAccounts: 0,
+      contactsReached: 0,
+      totalReplies: 0,
+      positiveReplies: 0,
+      qualifiedProspects: 0,
+      meetingsBooked: 0,
+      meetingsCompleted: 0,
+      dealsClosed: 0,
+      revenueGenerated: 0,
+      internalNotes: '',
+      updatedBy: 'RevRecovery Team',
+      updatedAt: Date.now(),
+      createdAt: Date.now(),
+    };
+
+    const updatedMetrics: ClientOperationalMetrics = {
+      ...current,
+      ...metricsUpdates,
+      clientId,
+      targetAccounts: metricsUpdates.targetAccounts !== undefined ? cleanNum(metricsUpdates.targetAccounts) : current.targetAccounts,
+      contactsReached: metricsUpdates.contactsReached !== undefined ? cleanNum(metricsUpdates.contactsReached) : current.contactsReached,
+      totalReplies: metricsUpdates.totalReplies !== undefined ? cleanNum(metricsUpdates.totalReplies) : current.totalReplies,
+      positiveReplies: metricsUpdates.positiveReplies !== undefined ? cleanNum(metricsUpdates.positiveReplies) : current.positiveReplies,
+      qualifiedProspects: metricsUpdates.qualifiedProspects !== undefined ? cleanNum(metricsUpdates.qualifiedProspects) : current.qualifiedProspects,
+      meetingsBooked: metricsUpdates.meetingsBooked !== undefined ? cleanNum(metricsUpdates.meetingsBooked) : current.meetingsBooked,
+      meetingsCompleted: metricsUpdates.meetingsCompleted !== undefined ? cleanNum(metricsUpdates.meetingsCompleted) : current.meetingsCompleted,
+      dealsClosed: metricsUpdates.dealsClosed !== undefined ? cleanNum(metricsUpdates.dealsClosed) : current.dealsClosed,
+      revenueGenerated: metricsUpdates.revenueGenerated !== undefined ? cleanNum(metricsUpdates.revenueGenerated) : current.revenueGenerated,
+      campaignStatus: metricsUpdates.campaignStatus || current.campaignStatus,
+      reportingPeriod: metricsUpdates.reportingPeriod || current.reportingPeriod,
+      internalNotes: metricsUpdates.internalNotes !== undefined ? metricsUpdates.internalNotes : current.internalNotes,
+      updatedBy: metricsUpdates.updatedBy || 'RevRecovery Team',
+      updatedAt: Date.now(),
+    };
+
+    await get().updateClient(clientId, { operationalMetrics: updatedMetrics });
   },
 
   updateClient: async (id, updates) => {
@@ -705,36 +822,81 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     const client = get().clients.find((c) => c.id === clientId);
     const company = client ? get().companies.find((comp) => comp.id === client.companyId) : null;
     const clientName = company?.name || 'Client';
+    const normalizedEmail = data.email.trim().toLowerCase();
 
-    const newUser: ClientPortalUser = {
-      id: generateId(),
-      email: data.email.trim().toLowerCase(),
-      name: data.name.trim(),
-      clientId,
-      clientName,
-      role: data.role || 'client_admin',
-      status: 'active',
-      invitedBy: 'Sanskar Anand',
-      invitedAt: Date.now(),
-      createdAt: Date.now(),
-    };
+    const existingUser = get().clientPortalUsers.find(
+      (u) => u.clientId === clientId && u.email === normalizedEmail
+    );
 
-    const updatedUsers = [newUser, ...get().clientPortalUsers];
-    set({ clientPortalUsers: updatedUsers });
-    await saveEntityToRevDB('clientPortalUsers', newUser);
+    let newUser: ClientPortalUser;
+    if (existingUser) {
+      newUser = {
+        ...existingUser,
+        status: 'invited',
+        role: data.role || existingUser.role || 'client_admin',
+        invitedAt: Date.now(),
+      };
+      const updatedUsers = get().clientPortalUsers.map((u) => (u.id === existingUser.id ? newUser : u));
+      set({ clientPortalUsers: updatedUsers });
+      await saveEntityToRevDB('clientPortalUsers', newUser);
+    } else {
+      newUser = {
+        id: generateId(),
+        email: normalizedEmail,
+        name: data.name.trim() || normalizedEmail.split('@')[0],
+        clientId,
+        clientName,
+        role: data.role || 'client_admin',
+        status: 'invited',
+        invitedBy: 'Sanskar Anand',
+        invitedAt: Date.now(),
+        createdAt: Date.now(),
+      };
+      const updatedUsers = [newUser, ...get().clientPortalUsers];
+      set({ clientPortalUsers: updatedUsers });
+      await saveEntityToRevDB('clientPortalUsers', newUser);
+    }
 
     if (client) {
       const existingUserIds = client.portalUserIds || [];
-      if (!existingUserIds.includes(newUser.id)) {
-        await get().updateClient(clientId, {
-          portalUserIds: [...existingUserIds, newUser.id],
-        });
-      }
+      const updatedUserIds = existingUserIds.includes(newUser.id)
+        ? existingUserIds
+        : [...existingUserIds, newUser.id];
+
+      await get().updateClient(clientId, {
+        portalUserIds: updatedUserIds,
+        portalAccessStatus: 'Invitation Pending',
+        contactEmail: client.contactEmail || newUser.email,
+      });
     }
 
     const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
-    const inviteLink = `${origin}/?portalClientId=${clientId}&portalEmail=${encodeURIComponent(newUser.email)}`;
+    const inviteLink = `${origin}/client-portal/login?email=${encodeURIComponent(newUser.email)}&clientId=${clientId}`;
     return { user: newUser, inviteLink };
+  },
+
+  resendClientPortalInvitation: async (id) => {
+    const user = get().clientPortalUsers.find((u) => u.id === id);
+    if (!user) throw new Error('Client portal user not found');
+
+    const updatedUser: ClientPortalUser = {
+      ...user,
+      invitedAt: Date.now(),
+      status: user.status === 'revoked' ? 'invited' : user.status,
+    };
+
+    const updated = get().clientPortalUsers.map((u) => (u.id === id ? updatedUser : u));
+    set({ clientPortalUsers: updated });
+    await saveEntityToRevDB('clientPortalUsers', updatedUser);
+
+    const client = get().clients.find((c) => c.id === user.clientId);
+    if (client && client.portalAccessStatus !== 'Active') {
+      await get().updateClient(client.id, { portalAccessStatus: 'Invitation Pending' });
+    }
+
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+    const inviteLink = `${origin}/client-portal/login?email=${encodeURIComponent(user.email)}&clientId=${user.clientId}`;
+    return { inviteLink };
   },
 
   updateClientPortalUserRole: async (id, role) => {
@@ -747,12 +909,21 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   },
 
   revokeClientPortalUser: async (id) => {
+    const user = get().clientPortalUsers.find((u) => u.id === id);
     const updated = get().clientPortalUsers.map((u) =>
       u.id === id ? { ...u, status: 'revoked' as const } : u
     );
     set({ clientPortalUsers: updated });
     const target = updated.find((u) => u.id === id);
     if (target) await saveEntityToRevDB('clientPortalUsers', target);
+
+    if (user?.clientId) {
+      const clientUsers = updated.filter((u) => u.clientId === user.clientId);
+      const allRevokedOrEmpty = clientUsers.length === 0 || clientUsers.every((u) => u.status === 'revoked');
+      if (allRevokedOrEmpty) {
+        await get().updateClient(user.clientId, { portalAccessStatus: 'Revoked' });
+      }
+    }
   },
 
   deleteClientPortalUser: async (id) => {
@@ -903,7 +1074,40 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
 
     const conversions = rawLeads.filter((l) => l.stage === 'Won' || l.dealStatus === 'Won').length;
 
-    const conversionRate = leadsGenerated > 0 ? Number(((conversions / leadsGenerated) * 100).toFixed(1)) : 0;
+    // Use team-managed operational metrics when provided, blending accurately with records
+    const opMetrics = client?.operationalMetrics;
+
+    const effectiveTargetAccounts = opMetrics?.targetAccounts !== undefined && opMetrics.targetAccounts > 0
+      ? opMetrics.targetAccounts
+      : leadsGenerated;
+    const effectiveContactsReached = opMetrics?.contactsReached !== undefined && opMetrics.contactsReached > 0
+      ? opMetrics.contactsReached
+      : outreachSent;
+    const effectiveTotalReplies = opMetrics?.totalReplies !== undefined && opMetrics.totalReplies > 0
+      ? opMetrics.totalReplies
+      : repliesReceived;
+    const effectivePositiveReplies = opMetrics?.positiveReplies !== undefined && opMetrics.positiveReplies > 0
+      ? opMetrics.positiveReplies
+      : rawLeads.filter((l) => l.isPositiveReply).length;
+    const effectiveQualifiedProspects = opMetrics?.qualifiedProspects !== undefined && opMetrics.qualifiedProspects > 0
+      ? opMetrics.qualifiedProspects
+      : qualifiedProspects;
+    const effectiveMeetingsBooked = opMetrics?.meetingsBooked !== undefined && opMetrics.meetingsBooked > 0
+      ? opMetrics.meetingsBooked
+      : meetingsBooked;
+    const effectiveMeetingsCompleted = opMetrics?.meetingsCompleted !== undefined && opMetrics.meetingsCompleted > 0
+      ? opMetrics.meetingsCompleted
+      : meetingsCompleted;
+    const effectiveDealsClosed = opMetrics?.dealsClosed !== undefined && opMetrics.dealsClosed > 0
+      ? opMetrics.dealsClosed
+      : conversions;
+    const effectiveRevenueGenerated = opMetrics?.revenueGenerated !== undefined && opMetrics.revenueGenerated > 0
+      ? opMetrics.revenueGenerated
+      : (conversions * (client?.monthlyValue || 0));
+
+    const conversionRate = effectiveTargetAccounts > 0
+      ? Number(((effectiveDealsClosed / effectiveTargetAccounts) * 100).toFixed(1))
+      : (leadsGenerated > 0 ? Number(((conversions / leadsGenerated) * 100).toFixed(1)) : 0);
 
     // Shared documents
     const sharedDocuments = [
@@ -927,19 +1131,50 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
       },
     ];
 
+    // Sanitize operational metrics to strictly hide internalNotes and internal financial details
+    const sanitizedOpMetrics: Partial<ClientOperationalMetrics> | undefined = opMetrics
+      ? {
+          id: opMetrics.id,
+          clientId: opMetrics.clientId,
+          reportingPeriod: opMetrics.reportingPeriod,
+          campaignStatus: opMetrics.campaignStatus,
+          targetAccounts: opMetrics.targetAccounts,
+          contactsReached: opMetrics.contactsReached,
+          totalReplies: opMetrics.totalReplies,
+          positiveReplies: opMetrics.positiveReplies,
+          qualifiedProspects: opMetrics.qualifiedProspects,
+          meetingsBooked: opMetrics.meetingsBooked,
+          meetingsCompleted: opMetrics.meetingsCompleted,
+          dealsClosed: opMetrics.dealsClosed,
+          revenueGenerated: opMetrics.revenueGenerated,
+          updatedBy: opMetrics.updatedBy,
+          updatedAt: opMetrics.updatedAt,
+          createdAt: opMetrics.createdAt,
+          internalNotes: undefined, // Strictly hidden
+        }
+      : undefined;
+
     return {
       client,
       company,
       settings,
+      campaignStatus: opMetrics?.campaignStatus || 'Active',
+      reportingPeriod: opMetrics?.reportingPeriod || 'Current Period',
+      operationalMetrics: sanitizedOpMetrics,
       metrics: {
-        leadsGenerated,
-        outreachSent,
-        repliesReceived,
-        qualifiedProspects,
-        meetingsBooked,
-        meetingsCompleted,
-        conversions,
+        leadsGenerated: effectiveTargetAccounts,
+        outreachSent: effectiveContactsReached,
+        repliesReceived: effectiveTotalReplies,
+        positiveReplies: effectivePositiveReplies,
+        qualifiedProspects: effectiveQualifiedProspects,
+        meetingsBooked: effectiveMeetingsBooked,
+        meetingsCompleted: effectiveMeetingsCompleted,
+        conversions: effectiveDealsClosed,
         conversionRate,
+        dealsClosed: effectiveDealsClosed,
+        revenueGenerated: effectiveRevenueGenerated,
+        targetAccounts: effectiveTargetAccounts,
+        contactsReached: effectiveContactsReached,
       },
       leads: isolatedLeads,
       meetings: isolatedMeetings,

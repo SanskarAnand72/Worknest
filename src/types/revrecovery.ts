@@ -129,9 +129,31 @@ export interface ClientDiscoveryQuestionnaire {
   constraintsAndRequirements: string;
 }
 
+export type PortalAccessStatus = 'Not Invited' | 'Invitation Pending' | 'Active' | 'Revoked';
+
+export interface ClientOperationalMetrics {
+  id: string;
+  clientId: string;
+  reportingPeriod: string; // e.g. "October 2026", "Q4 2026"
+  campaignStatus: 'Active' | 'Pacing Well' | 'Optimizing' | 'On Hold' | 'Completed';
+  targetAccounts: number;
+  contactsReached: number;
+  totalReplies: number;
+  positiveReplies: number;
+  qualifiedProspects: number;
+  meetingsBooked: number;
+  meetingsCompleted: number;
+  dealsClosed: number;
+  revenueGenerated: number;
+  internalNotes?: string;
+  updatedBy: string;
+  updatedAt: number;
+  createdAt: number;
+}
+
 export interface ClientPortalSettings {
   enabled: boolean;
-  allowedMetrics: ('leads' | 'outreach' | 'replies' | 'qualified' | 'meetings' | 'conversions')[];
+  allowedMetrics: ('leads' | 'outreach' | 'replies' | 'qualified' | 'meetings' | 'conversions' | 'revenue' | 'deals')[];
   allowedTabs: ('overview' | 'campaigns' | 'meetings' | 'projects' | 'documents')[];
   kpiTargets: {
     monthlyLeads?: number;
@@ -139,6 +161,7 @@ export interface ClientPortalSettings {
     monthlyMeetings?: number;
     monthlyQualified?: number;
     targetConversionRate?: number;
+    targetRevenue?: number;
   };
   sharedDocIds: string[];
   sharedNotes?: string;
@@ -164,9 +187,12 @@ export interface Client {
   id: string;
   companyId: string;
   primaryContactId?: string;
+  contactEmail?: string;
   servicesPurchased: string[];
   commercialTerms: string;
   contractStatus: 'Active' | 'Pending Renewal' | 'Paused' | 'Terminated';
+  portalAccessStatus?: PortalAccessStatus;
+  operationalMetrics?: ClientOperationalMetrics;
   monthlyValue: number;
   currency?: string;
   startDate: string;
@@ -182,6 +208,21 @@ export interface Client {
   archived?: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+export function getClientPortalAccessStatus(client: Client, portalUsers: ClientPortalUser[]): PortalAccessStatus {
+  if (client.portalAccessStatus && client.portalAccessStatus !== 'Not Invited') {
+    // If explicitly stored
+    if (client.portalSettings && !client.portalSettings.enabled) return 'Revoked';
+  }
+  const usersForClient = portalUsers.filter((u) => u.clientId === client.id);
+  if (usersForClient.length === 0) return 'Not Invited';
+  if (client.portalSettings && !client.portalSettings.enabled) return 'Revoked';
+  const hasActive = usersForClient.some((u) => u.status === 'active');
+  if (hasActive) return 'Active';
+  const hasRevoked = usersForClient.every((u) => u.status === 'revoked');
+  if (hasRevoked) return 'Revoked';
+  return 'Invitation Pending';
 }
 
 export interface ProjectMilestone {

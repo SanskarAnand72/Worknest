@@ -160,7 +160,9 @@ export const ClientPortalManageModal: React.FC<ClientPortalManageModalProps> = (
     onClose();
   };
 
-  const portalBaseUrl = typeof window !== 'undefined' ? `${window.location.origin}/?portalClientId=${client.id}` : '';
+  const portalBaseUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/client-portal/login?email=${encodeURIComponent(client.contactEmail || '')}&clientId=${client.id}`
+    : '';
 
   const handleCopyLink = (linkToCopy: string) => {
     navigator.clipboard.writeText(linkToCopy);
@@ -338,7 +340,9 @@ export const ClientPortalManageModal: React.FC<ClientPortalManageModalProps> = (
                     { id: 'replies', label: 'Replies Received', desc: 'Direct responses and interested prospect replies' },
                     { id: 'qualified', label: 'Qualified Prospects', desc: 'Prospects meeting criteria and entering sales discussion' },
                     { id: 'meetings', label: 'Meetings Booked & Held', desc: 'Confirmed discovery calls and completed sessions' },
-                    { id: 'conversions', label: 'Conversions / Deals Won', desc: 'Closed revenue opportunities and converted clients' },
+                    { id: 'conversions', label: 'Conversions / Win Rate', desc: 'Closed revenue opportunities and conversion rate' },
+                    { id: 'deals', label: 'Deals Closed', desc: 'Display count of won customer opportunities to client' },
+                    { id: 'revenue', label: 'Revenue Generated', desc: 'Display client-attributed pipeline revenue' },
                   ].map((m) => {
                     const isChecked = allowedMetrics.includes(m.id);
                     return (

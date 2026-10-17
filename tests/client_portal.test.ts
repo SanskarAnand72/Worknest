@@ -68,25 +68,33 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(user.email).toBe('karri@linear.app');
     expect(user.clientId).toBe(client.id);
     expect(user.role).toBe('client_admin');
-    expect(user.status).toBe('active');
-    expect(inviteLink).toContain(`portalClientId=${client.id}`);
-    expect(inviteLink).toContain(`portalEmail=${encodeURIComponent('karri@linear.app')}`);
+    expect(user.status).toBe('invited');
+    expect(inviteLink).toContain('/client-portal/login');
+    expect(inviteLink).toContain(`email=${encodeURIComponent('karri@linear.app')}`);
 
-    // Verify stored in client.portalUserIds
+    // Verify stored in client.portalUserIds and client portal status updated
     const updatedClient = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
     expect(updatedClient?.portalUserIds).toContain(user.id);
+    expect(updatedClient?.portalAccessStatus).toBe('Invitation Pending');
 
-    // 2. Update role to client_guest
+    // 2. Resend invitation test
+    const { inviteLink: resentLink } = await store.resendClientPortalInvitation(user.id);
+    expect(resentLink).toContain('/client-portal/login');
+    expect(resentLink).toContain(`email=${encodeURIComponent('karri@linear.app')}`);
+
+    // 3. Update role to client_guest
     await store.updateClientPortalUserRole(user.id, 'client_guest');
     const guestUser = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
     expect(guestUser?.role).toBe('client_guest');
 
-    // 3. Revoke user access
+    // 4. Revoke user access
     await store.revokeClientPortalUser(user.id);
     const revokedUser = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
     expect(revokedUser?.status).toBe('revoked');
+    const revokedClient = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    expect(revokedClient?.portalAccessStatus).toBe('Revoked');
 
-    // 4. Delete user
+    // 5. Delete user
     await store.deleteClientPortalUser(user.id);
     const deletedUser = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
     expect(deletedUser).toBeUndefined();
@@ -372,5 +380,148 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
 
     expect(todayData.leads.length).toBeGreaterThanOrEqual(1);
     expect(allData.leads.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('7. Client creation sets Not Invited status, empty portal users, and never auto-grants portal access', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const company = await store.addCompany({ name: 'Vanguard Systems', industry: 'Enterprise SaaS' });
+    const client = await store.addClient({
+      companyId: company.id,
+      contactEmail: 'founder@vanguard.io',
+      monthlyValue: 7500,
+      accountOwner: 'Sarah Jenkins',
+    });
+
+    // 1. Initial portal access status must be 'Not Invited'
+    expect(client.portalAccessStatus).toBe('Not Invited');
+    expect(client.portalUserIds).toEqual([]);
+    expect(client.contactEmail).toBe('founder@vanguard.io');
+
+    // 2. Initial operational metrics must exist with 0 counts and current period
+    expect(client.operationalMetrics).toBeDefined();
+    expect(client.operationalMetrics?.targetAccounts).toBe(0);
+    expect(client.operationalMetrics?.contactsReached).toBe(0);
+    expect(client.operationalMetrics?.meetingsBooked).toBe(0);
+    expect(client.operationalMetrics?.dealsClosed).toBe(0);
+    expect(client.operationalMetrics?.revenueGenerated).toBe(0);
+
+    // 3. Confirm that no portal user was automatically created in clientPortalUsers
+    const existingUser = store.clientPortalUsers.find((u) => u.email === 'founder@vanguard.io');
+    expect(existingUser).toBeUndefined();
+  });
+
+  it('8. Allows authorized team members to update operational metrics with numeric validation', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const company = await store.addCompany({ name: 'Apex Growth Labs' });
+    const client = await store.addClient({ companyId: company.id });
+
+    // Update operational metrics with valid numbers and internal notes
+    await store.updateClientOperationalMetrics(client.id, {
+      reportingPeriod: 'October 2026',
+      campaignStatus: 'Pacing Well',
+      targetAccounts: 300,
+      contactsReached: 250,
+      totalReplies: 35,
+      positiveReplies: 18,
+      qualifiedProspects: 14,
+      meetingsBooked: 10,
+      meetingsCompleted: 8,
+      dealsClosed: 3,
+      revenueGenerated: 45000,
+      internalNotes: 'Confidential internal note: CAC is under $250, pacing well ahead of target',
+      updatedBy: 'Sarah Jenkins',
+    });
+
+    const updatedClient = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    const metrics = updatedClient?.operationalMetrics;
+
+    expect(metrics).toBeDefined();
+    expect(metrics?.reportingPeriod).toBe('October 2026');
+    expect(metrics?.campaignStatus).toBe('Pacing Well');
+    expect(metrics?.targetAccounts).toBe(300);
+    expect(metrics?.contactsReached).toBe(250);
+    expect(metrics?.totalReplies).toBe(35);
+    expect(metrics?.positiveReplies).toBe(18);
+    expect(metrics?.qualifiedProspects).toBe(14);
+    expect(metrics?.meetingsBooked).toBe(10);
+    expect(metrics?.meetingsCompleted).toBe(8);
+    expect(metrics?.dealsClosed).toBe(3);
+    expect(metrics?.revenueGenerated).toBe(45000);
+    expect(metrics?.internalNotes).toContain('Confidential internal note');
+    expect(metrics?.updatedBy).toBe('Sarah Jenkins');
+    expect(metrics?.updatedAt).toBeGreaterThan(0);
+
+    // Numeric validation test: negative values should be sanitized to fallback 0
+    await store.updateClientOperationalMetrics(client.id, {
+      targetAccounts: -50 as any,
+    });
+    const sanitizedClient = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    expect(sanitizedClient?.operationalMetrics?.targetAccounts).toBe(0);
+  });
+
+  it('9. Strictly conceals internal notes and respects configurable visibility for deals and revenue', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const company = await store.addCompany({ name: 'Cipher Data Corp' });
+    const client = await store.addClient({ companyId: company.id });
+
+    await store.updateClientOperationalMetrics(client.id, {
+      reportingPeriod: 'Q4 2026',
+      campaignStatus: 'Active',
+      targetAccounts: 500,
+      contactsReached: 400,
+      dealsClosed: 5,
+      revenueGenerated: 60000,
+      internalNotes: 'TOP SECRET INTERNAL MARGIN AND COST DATA',
+    });
+
+    // 1. Verify getClientPortalData returns sanitized operationalMetrics without internalNotes
+    const portalData = store.getClientPortalData(client.id, 'all');
+    expect(portalData.operationalMetrics).toBeDefined();
+    expect(portalData.operationalMetrics?.internalNotes).toBeUndefined();
+    expect((portalData.operationalMetrics as any)?.internalNotes).toBeUndefined();
+
+    // 2. Revenue and deals metrics available when enabled
+    expect(portalData.metrics.dealsClosed).toBe(5);
+    expect(portalData.metrics.revenueGenerated).toBe(60000);
+
+    // 3. Test portal settings configurable allowedMetrics
+    await store.updateClientPortalSettings(client.id, {
+      allowedMetrics: ['leads', 'outreach', 'meetings'], // revenue and deals omitted
+    });
+
+    const updatedClient = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    expect(updatedClient?.portalSettings?.allowedMetrics).not.toContain('revenue');
+    expect(updatedClient?.portalSettings?.allowedMetrics).not.toContain('deals');
+  });
+
+  it('10. Revoking portal user access updates client portal access status and blocks access', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    const company = await store.addCompany({ name: 'Sentinel Security Corp' });
+    const client = await store.addClient({
+      companyId: company.id,
+      contactEmail: 'contact@sentinel.io',
+    });
+
+    // Invite user
+    const { user } = await store.inviteClientPortalUser(client.id, {
+      email: 'contact@sentinel.io',
+      name: 'Security Admin',
+    });
+
+    let clientRecord = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    expect(clientRecord?.portalAccessStatus).toBe('Invitation Pending');
+
+    // Revoke user
+    await store.revokeClientPortalUser(user.id);
+
+    clientRecord = useRevRecoveryStore.getState().clients.find((c) => c.id === client.id);
+    expect(clientRecord?.portalAccessStatus).toBe('Revoked');
+
+    const revokedUser = useRevRecoveryStore.getState().clientPortalUsers.find((u) => u.id === user.id);
+    expect(revokedUser?.status).toBe('revoked');
   });
 });
