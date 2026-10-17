@@ -2,21 +2,22 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Authentication Helper
+    // 1. Authentication Helper
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Retrieve authenticated user's workspace member record
+    // 2. Member Record Retrieval & Membership Check
+    function isRegisteredMember(workspaceId) {
+      return isAuthenticated() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
     function getMember(workspaceId) {
       return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data;
     }
 
-    function isRegisteredMember(workspaceId) {
-      return isAuthenticated() && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
-    }
-
-    // Workspace owner / founders
+    // 3. Workspace Owner / Founders
     function isWorkspaceOwner(workspaceId) {
       return isAuthenticated() && (
         (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
@@ -25,7 +26,7 @@ service cloud.firestore {
       );
     }
 
-    // Workspace Administrators
+    // 4. Workspace Administrators
     function isWorkspaceAdmin(workspaceId) {
       return isAuthenticated() && (
         isWorkspaceOwner(workspaceId) ||
@@ -33,26 +34,59 @@ service cloud.firestore {
       );
     }
 
-    // Internal agency/team member (full internal access)
+    // 5. Internal Agency Team Member (Full internal access)
     function isInternalTeamMember(workspaceId) {
       return isRegisteredMember(workspaceId) &&
         getMember(workspaceId).role in ['owner', 'co-founder', 'co-owner', 'admin', 'member', 'viewer'];
     }
 
-    // Verified Client User (client_admin or client_guest)
+    // 6. Verified Client User (client_admin or client_guest)
     function isClientUser(workspaceId) {
       return isRegisteredMember(workspaceId) &&
         getMember(workspaceId).role in ['client_admin', 'client_guest'];
     }
 
-    // Client Organization Authorization Guard:
-    // Requires that the client user's registered clientId strictly matches the record's clientId
+    // 7. Verify Client Organization Portal Access Status (Suspended/Revoked check)
+    function isClientPortalActive(workspaceId, clientId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)) &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)).data.portalAccessStatus != 'Revoked' &&
+        (!('portalSettings' in get(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)).data) ||
+         get(/databases/$(database)/documents/workspaces/$(workspaceId)/clients/$(clientId)).data.portalSettings.enabled == true);
+    }
+
+    // 8. Client Organization Authorization Guard:
+    // Requires that the client user's registered clientId strictly matches the target clientId
+    // and the client organization is active (not revoked or offline)
     function isAuthorizedClient(workspaceId, clientId) {
-      return isAuthenticated() && (
-        (isClientUser(workspaceId) && clientId != null && getMember(workspaceId).clientId == clientId) ||
-        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)).data.clientId == clientId)
-      );
+      return isAuthenticated() &&
+        clientId != null &&
+        isClientUser(workspaceId) &&
+        getMember(workspaceId).clientId == clientId &&
+        isClientPortalActive(workspaceId, clientId);
+    }
+
+    // 9. Genuine Invitation Validation Guard:
+    // Strictly verifies that a genuine admin-created invitation exists matching the user's email,
+    // clientId, and role. Prevents self-assigning arbitrary roles or client organizations.
+    function isValidClientInvitation(workspaceId, memberId, memberData) {
+      return isAuthenticated() &&
+        request.auth.token.email != null &&
+        memberData.email == request.auth.token.email &&
+        (
+          // Option A: Explicit invitationId provided in member document
+          ('invitationId' in memberData &&
+           exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberData.invitationId)) &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberData.invitationId)).data.email == request.auth.token.email &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberData.invitationId)).data.clientId == memberData.clientId &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberData.invitationId)).data.role == memberData.role &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberData.invitationId)).data.status != 'revoked') ||
+          // Option B: Invitation document keyed directly by member UID
+          (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberId)) &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberId)).data.email == request.auth.token.email &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberId)).data.clientId == memberData.clientId &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberId)).data.role == memberData.role &&
+           get(/databases/$(database)/documents/workspaces/$(workspaceId)/clientPortalUsers/$(memberId)).data.status != 'revoked')
+        );
     }
 
     // System probe / status check - requires authenticated user, never public
@@ -61,7 +95,7 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // User profile document
+    // User profile document (Self-managed only)
     match /users/{userId} {
       allow read, write: if isAuthenticated() && request.auth.uid == userId;
     }
@@ -69,27 +103,28 @@ service cloud.firestore {
     // Workspaces collection
     match /workspaces/{workspaceId} {
       allow read: if isInternalTeamMember(workspaceId) || isClientUser(workspaceId);
-      allow create: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.ownerId == request.auth.uid;
       allow update, delete: if isWorkspaceAdmin(workspaceId);
 
-      // Members Management (Prevents self-escalation or unauthorized client assignment)
+      // Members Management (Prevents self-escalation and arbitrary client assignment)
       match /members/{memberId} {
-        allow read: if isInternalTeamMember(workspaceId) || (isAuthenticated() && request.auth.uid == memberId);
+        allow read: if (isAuthenticated() && request.auth.uid == memberId) || isInternalTeamMember(workspaceId);
         allow create: if isWorkspaceAdmin(workspaceId) || (
+          // Case 1: Workspace owner creating their initial owner membership
           isAuthenticated() &&
           request.auth.uid == memberId &&
-          (
-            (request.resource.data.role == 'member' && !('clientId' in request.resource.data)) ||
-            (request.resource.data.role in ['client_admin', 'client_guest'] && 'clientId' in request.resource.data &&
-             request.auth.token.email != null && request.resource.data.email == request.auth.token.email)
-          )
-        );
-        allow update: if isWorkspaceAdmin(workspaceId) || (
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+          get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid &&
+          request.resource.data.role in ['owner', 'co-founder', 'admin']
+        ) || (
+          // Case 2: Client representative accepting a genuine invitation created by an authorized admin
           isAuthenticated() &&
           request.auth.uid == memberId &&
-          request.resource.data.role == resource.data.role &&
-          request.resource.data.clientId == resource.data.clientId
+          request.resource.data.role in ['client_admin', 'client_guest'] &&
+          'clientId' in request.resource.data &&
+          isValidClientInvitation(workspaceId, memberId, request.resource.data)
         );
+        allow update: if isWorkspaceAdmin(workspaceId);
         allow delete: if isWorkspaceAdmin(workspaceId);
       }
 
@@ -103,15 +138,19 @@ service cloud.firestore {
       match /clientPortalUsers/{portalUserId} {
         allow read: if isInternalTeamMember(workspaceId) || 
           (isAuthenticated() && request.auth.token.email != null && resource.data.email == request.auth.token.email) ||
-          (isClientUser(workspaceId) && isAuthorizedClient(workspaceId, resource.data.clientId));
-        allow write: if isWorkspaceAdmin(workspaceId) || (
+          (isAuthorizedClient(workspaceId, resource.data.clientId));
+        allow create: if isWorkspaceAdmin(workspaceId);
+        allow update: if isWorkspaceAdmin(workspaceId) || (
           isAuthenticated() &&
           request.auth.token.email != null &&
           resource.data.email == request.auth.token.email &&
           request.resource.data.email == resource.data.email &&
           request.resource.data.clientId == resource.data.clientId &&
-          request.resource.data.role == resource.data.role
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.status in ['invited', 'active'] &&
+          resource.data.status != 'revoked'
         );
+        allow delete: if isWorkspaceAdmin(workspaceId);
       }
 
       // Pipeline Leads / Deals (Isolated per client organization)
@@ -172,6 +211,12 @@ service cloud.firestore {
         allow read, write: if isInternalTeamMember(workspaceId);
       }
       match /pages/{pageId} {
+        allow read, write: if isInternalTeamMember(workspaceId);
+      }
+      match /teamMembers/{teamMemberId} {
+        allow read, write: if isInternalTeamMember(workspaceId);
+      }
+      match /kpiTargets/{targetId} {
         allow read, write: if isInternalTeamMember(workspaceId);
       }
     }
