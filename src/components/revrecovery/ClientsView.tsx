@@ -314,12 +314,22 @@ export const ClientsView: React.FC = () => {
             user: result.user,
           }),
         });
+
+        // Dispatch initial Firebase Auth password setup email
+        fetch('/api/client-portal/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: result.user.email,
+            clientId: activeClient.id,
+          }),
+        }).catch(() => {});
       } catch (syncErr) {
         console.warn('Cloud sync notification:', syncErr);
       }
 
       setPortalActionSuccess(
-        `Portal invitation link created for ${result.user.email}. Share this login URL directly with the client.`
+        `Portal invitation link created for ${result.user.email}. Setup link dispatched to client's email.`
       );
       setPortalInviteEmail(result.user.email);
     } catch (err: unknown) {
@@ -364,6 +374,11 @@ Portal Login URL:
 ${portalUrl}
 
 Your Authorized Login Email: ${email}
+
+First-Time Access:
+1. Open the portal URL above.
+2. Enter your email and chosen password to set up your account.
+3. If you have an existing Firebase account or prefer an email link, click "Forgot or need setup link?" to receive a secure password setup link.
 
 Best regards,
 RevRecovery Growth Team`;
@@ -1827,6 +1842,32 @@ RevRecovery Growth Team`;
                                     className="px-2.5 py-1 rounded-md border border-border bg-card hover:bg-muted text-[11px] font-medium text-foreground transition-colors"
                                   >
                                     Resend Invite
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        const res = await fetch('/api/client-portal/reset-password', {
+                                          method: 'POST',
+                                          headers: { 'Content-Type': 'application/json' },
+                                          body: JSON.stringify({
+                                            email: user.email,
+                                            clientId: activeClient.id,
+                                          }),
+                                        });
+                                        const data = await res.json();
+                                        if (res.ok && data.success) {
+                                          setPortalActionSuccess(`Password setup link sent to ${user.email}`);
+                                        } else {
+                                          setPortalActionError(data.error || 'Failed to dispatch setup link.');
+                                        }
+                                      } catch (err) {
+                                        setPortalActionError('Failed to dispatch password setup email.');
+                                      }
+                                    }}
+                                    className="px-2.5 py-1 rounded-md border border-sky-500/20 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 text-[11px] font-medium transition-colors"
+                                  >
+                                    Send Setup Link
                                   </button>
                                   <button
                                     type="button"

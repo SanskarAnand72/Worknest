@@ -11,7 +11,10 @@ import {
 /**
  * Helper to authenticate or register user via Firebase Auth Identity Toolkit REST API
  */
-async function authenticateWithFirebase(email: string, pass: string): Promise<{ success: boolean; error?: string }> {
+async function authenticateWithFirebase(
+  email: string,
+  pass: string
+): Promise<{ success: boolean; error?: string; canResetPassword?: boolean }> {
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
   if (!apiKey) {
     // If no Firebase API key in environment, allow valid credentials check
@@ -59,7 +62,9 @@ async function authenticateWithFirebase(email: string, pass: string): Promise<{ 
       if (signUpData.error?.message === 'EMAIL_EXISTS') {
         return {
           success: false,
-          error: 'Incorrect password for this account. Please verify your credentials or contact your account manager.',
+          error:
+            'Incorrect password for this account. If you haven\'t set a password or need to reset it, request a secure setup link below.',
+          canResetPassword: true,
         };
       }
 
@@ -74,7 +79,9 @@ async function authenticateWithFirebase(email: string, pass: string): Promise<{ 
     if (errorMsg === 'INVALID_PASSWORD') {
       return {
         success: false,
-        error: 'Incorrect password for this account. Please verify your credentials or contact your account manager.',
+        error:
+          'Incorrect password for this account. If you haven\'t set a password or need to reset it, request a secure setup link below.',
+        canResetPassword: true,
       };
     }
 
@@ -82,6 +89,7 @@ async function authenticateWithFirebase(email: string, pass: string): Promise<{ 
       return {
         success: false,
         error: 'Too many unsuccessful attempts. Access temporarily disabled. Please try again later.',
+        canResetPassword: true,
       };
     }
 
@@ -101,7 +109,111 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { email, password, clientId } = body;
+    const { action, oobCode, newPassword, email, password, clientId } = body;
+
+    // Handle OOB Password Reset Completion
+    if (action === 'resetPassword') {
+      if (!oobCode || typeof oobCode !== 'string') {
+        return NextResponse.json(
+          { success: false, error: 'Password reset code is required.' },
+          { status: 400 }
+        );
+      }
+
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+        return NextResponse.json(
+          { success: false, error: 'Password must be at least 6 characters.' },
+          { status: 400 }
+        );
+      }
+
+      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+      let resetEmail = email ? email.trim().toLowerCase() : '';
+
+      if (apiKey) {
+        const resetRes = await fetch(
+          `https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${apiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ oobCode, newPassword }),
+          }
+        );
+
+        const resetData = await resetRes.json();
+        if (!resetRes.ok) {
+          const errMsg = resetData.error?.message || 'Invalid or expired password reset link.';
+          return NextResponse.json({ success: false, error: errMsg }, { status: 400 });
+        }
+
+        if (resetData.email) {
+          resetEmail = resetData.email.trim().toLowerCase();
+        }
+      }
+
+      if (!resetEmail) {
+        return NextResponse.json(
+          { success: false, error: 'Unable to identify representative email for password reset.' },
+          { status: 400 }
+        );
+      }
+
+      const authCheck = checkClientOrganizationAuthorization(resetEmail, clientId);
+      if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: authCheck.error || 'Access Denied: Not authorized for this client organization.',
+            diagnostic: authCheck.diagnostic,
+          },
+          { status: authCheck.statusCode || 403 }
+        );
+      }
+
+      const { user: invitedUser, client, company } = authCheck;
+      const updatedUser: ClientPortalUser = {
+        ...invitedUser,
+        status: 'active',
+        lastLoginAt: Date.now(),
+      };
+      registerPortalUser(updatedUser);
+
+      if (client.portalAccessStatus === 'Invitation Pending') {
+        client.portalAccessStatus = 'Active';
+        registerClient(client, company);
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Password successfully updated.',
+        user: {
+          id: updatedUser.id,
+          email: updatedUser.email,
+          name: updatedUser.name,
+          clientId: updatedUser.clientId,
+          clientName: updatedUser.clientName || company?.name || 'Client',
+          role: updatedUser.role,
+          status: updatedUser.status,
+          lastLoginAt: updatedUser.lastLoginAt,
+        },
+        client: {
+          id: client.id,
+          companyId: client.companyId,
+          servicesPurchased: client.servicesPurchased,
+          contractStatus: client.contractStatus,
+          portalAccessStatus: client.portalAccessStatus,
+          portalSettings: client.portalSettings,
+        },
+        company: company
+          ? {
+              id: company.id,
+              name: company.name,
+              website: company.website,
+              industry: company.industry,
+            }
+          : null,
+      });
+    }
 
     if (!email || typeof email !== 'string' || !email.includes('@')) {
       return NextResponse.json(
@@ -138,7 +250,12 @@ export async function POST(req: NextRequest) {
     const authResult = await authenticateWithFirebase(normalizedEmail, password);
     if (!authResult.success) {
       return NextResponse.json(
-        { success: false, error: authResult.error || 'Authentication failed.' },
+        {
+          success: false,
+          error: authResult.error || 'Authentication failed.',
+          canResetPassword: authResult.canResetPassword ?? false,
+          email: normalizedEmail,
+        },
         { status: 401 }
       );
     }

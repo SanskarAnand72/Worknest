@@ -17,6 +17,7 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Sparkles,
 } from 'lucide-react';
 
 function ClientPortalLoginForm() {
@@ -44,6 +45,15 @@ function ClientPortalLoginForm() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [invitedOrgName, setInvitedOrgName] = useState<string | null>(null);
+  const [canResetPassword, setCanResetPassword] = useState(false);
+  const [isSendingReset, setIsSendingReset] = useState(false);
+  const [isFirstTimeInvite, setIsFirstTimeInvite] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+
+  const mode = searchParams.get('mode');
+  const oobCode = searchParams.get('oobCode');
+  const isResetFlow = mode === 'resetPassword' || Boolean(oobCode);
 
   useEffect(() => {
     initWorkspace();
@@ -65,13 +75,127 @@ function ClientPortalLoginForm() {
       fetch(verifyUrl)
         .then((r) => r.json())
         .then((data) => {
-          if (data.exists && data.user?.clientName) {
-            setInvitedOrgName(data.user.clientName);
+          if (data.exists && data.user) {
+            if (data.user.clientName) {
+              setInvitedOrgName(data.user.clientName);
+            }
+            if (data.user.status === 'invited') {
+              setIsFirstTimeInvite(true);
+            }
           }
         })
         .catch(() => {});
     }
   }, [searchParams]);
+
+  const handleSendPasswordReset = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    const urlClientId = searchParams.get('clientId');
+
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setErrorMessage('Please enter your business email address above to receive a setup link.');
+      return;
+    }
+
+    setIsSendingReset(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+
+    try {
+      const res = await fetch('/api/client-portal/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          clientId: urlClientId,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setInfoMessage(
+          data.message || `Password setup link sent to ${normalizedEmail}! Please check your email inbox.`
+        );
+        setCanResetPassword(false);
+      } else {
+        setErrorMessage(data.error || 'Failed to dispatch password setup link.');
+      }
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Error sending password setup link.');
+    } finally {
+      setIsSendingReset(false);
+    }
+  };
+
+  const handleResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!oobCode) {
+      setErrorMessage('Missing password reset verification code.');
+      return;
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+      setErrorMessage('New password must be at least 6 characters.');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setErrorMessage('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+
+    try {
+      const res = await fetch('/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'resetPassword',
+          oobCode,
+          newPassword,
+          email: email.trim().toLowerCase(),
+          clientId: searchParams.get('clientId'),
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'revrecovery_portal_session',
+            JSON.stringify({
+              user: data.user,
+              clientId: data.client.id,
+              client: data.client,
+              company: data.company,
+              timestamp: Date.now(),
+            })
+          );
+        }
+
+        if (data.client && clients.some((c) => c.id === data.client.id)) {
+          await updateClient(data.client.id, {
+            portalAccessStatus: 'Active',
+            operationalMetrics: data.client.operationalMetrics,
+          });
+        }
+
+        setPortalClientId(data.client.id);
+        setPortalClientUser(data.user);
+        setIsClientPortalMode(true);
+        router.push('/client-portal/dashboard');
+      } else {
+        setErrorMessage(data.error || 'Failed to update password. The link may have expired.');
+      }
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Error setting new password.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -141,6 +265,9 @@ function ClientPortalLoginForm() {
           // If server returned a security error, log safe diagnostic info for internal admins
           if (data.diagnostic) {
             console.warn('[RevRecovery Portal Security Diagnostic]', data.diagnostic);
+          }
+          if (data.canResetPassword) {
+            setCanResetPassword(true);
           }
           setErrorMessage(data.error || 'Authentication failed. Please check your credentials.');
           setIsLoading(false);
@@ -289,93 +416,241 @@ function ClientPortalLoginForm() {
             <div className="w-12 h-12 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-500 flex items-center justify-center mx-auto shadow-xs">
               <Shield className="w-6 h-6" />
             </div>
-            <h1 className="text-lg font-bold text-foreground">Client Portal Access</h1>
+            <h1 className="text-lg font-bold text-foreground">
+              {isResetFlow ? 'Set Portal Password' : 'Client Portal Access'}
+            </h1>
             <p className="text-xs text-muted-foreground max-w-xs mx-auto leading-relaxed">
-              Sign in with your invited representative email to access your authorized RevRecovery performance dashboard{invitedOrgName ? ` for ${invitedOrgName}` : ''}.
+              {isResetFlow
+                ? 'Create a secure password for your authorized client portal account.'
+                : `Sign in with your invited representative email to access your authorized RevRecovery performance dashboard${invitedOrgName ? ` for ${invitedOrgName}` : ''}.`}
             </p>
           </div>
 
           {/* Form */}
-          <form onSubmit={handleLogin} className="p-6 space-y-4 text-xs">
-            {errorMessage && (
-              <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <span className="leading-relaxed">{errorMessage}</span>
-              </div>
-            )}
-
-            {infoMessage && (
-              <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-500 flex items-start gap-2.5 text-xs">
-                <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
-                <span className="leading-relaxed">{infoMessage}</span>
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <label className="block text-muted-foreground font-medium">Invited Contact Email</label>
-              <div className="relative">
-                <Mail className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
-                <input
-                  type="email"
-                  required
-                  placeholder="name@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
-                />
-              </div>
-              <span className="text-[11px] text-muted-foreground">
-                Must match the exact email address invited by your account executive.
-              </span>
-            </div>
-
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label className="block text-muted-foreground font-medium">Password / Access Key</label>
-                <span className="text-[10px] text-muted-foreground">First time? Set password below</span>
-              </div>
-              <div className="relative">
-                <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="••••••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 mt-2"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verifying Credentials...</span>
-                </>
-              ) : (
-                <>
-                  <Lock className="w-4 h-4" />
-                  <span>Authenticate & Enter Portal</span>
-                </>
+          {isResetFlow ? (
+            <form onSubmit={handleResetSubmit} className="p-6 space-y-4 text-xs">
+              {errorMessage && (
+                <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{errorMessage}</span>
+                </div>
               )}
-            </button>
 
-            <div className="pt-3 border-t border-border/60 text-center text-[11px] text-muted-foreground space-y-1">
-              <p>Security Notice: Cross-client access and self-assigned roles are strictly prevented.</p>
-              <p>Internal CRM data and proprietary team notes are completely hidden from client accounts.</p>
-            </div>
-          </form>
+              {infoMessage && (
+                <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-500 flex items-start gap-2.5 text-xs">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{infoMessage}</span>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Account Email</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type="email"
+                    required
+                    placeholder="name@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">New Password</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="At least 6 characters"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Confirm New Password</label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    placeholder="Re-enter password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 mt-2"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Saving Password...</span>
+                  </>
+                ) : (
+                  <>
+                    <Key className="w-4 h-4" />
+                    <span>Save Password & Enter Portal</span>
+                  </>
+                )}
+              </button>
+
+              <div className="pt-2 text-center">
+                <a
+                  href={`/client-portal/login?email=${encodeURIComponent(email)}&clientId=${encodeURIComponent(searchParams.get('clientId') || '')}`}
+                  className="text-[11px] text-muted-foreground hover:text-foreground underline transition-colors"
+                >
+                  Return to Portal Sign In
+                </a>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleLogin} className="p-6 space-y-4 text-xs">
+              {isFirstTimeInvite && (
+                <div className="p-2.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center gap-2 text-[11px]">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  <span>First-time setup: Enter your password to set it up, or request an email setup link below.</span>
+                </div>
+              )}
+
+              {errorMessage && (
+                <div className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive flex items-start gap-2.5 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{errorMessage}</span>
+                </div>
+              )}
+
+              {canResetPassword && (
+                <div className="p-3 bg-sky-500/10 border border-sky-500/20 rounded-xl space-y-2 text-xs">
+                  <div className="flex items-start gap-2 text-sky-400">
+                    <Key className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-semibold text-foreground text-[11px]">First time or forgot your password?</p>
+                      <p className="text-muted-foreground text-[11px]">
+                        We can dispatch a secure Firebase password setup link directly to{' '}
+                        <span className="font-mono text-foreground font-medium">{email || 'your email'}</span>.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSendPasswordReset}
+                    disabled={isSendingReset}
+                    className="w-full py-1.5 px-3 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-medium text-[11px] transition-colors flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-50"
+                  >
+                    {isSendingReset ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Sending Setup Link...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Mail className="w-3.5 h-3.5" />
+                        <span>Send Password Setup / Reset Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {infoMessage && (
+                <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-500 flex items-start gap-2.5 text-xs">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">{infoMessage}</span>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="block text-muted-foreground font-medium">Invited Contact Email</label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type="email"
+                    required
+                    placeholder="name@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                </div>
+                <span className="text-[11px] text-muted-foreground">
+                  Must match the exact email address invited by your account executive.
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-muted-foreground font-medium">Password / Access Key</label>
+                  <button
+                    type="button"
+                    onClick={handleSendPasswordReset}
+                    disabled={isSendingReset}
+                    className="text-[10px] text-sky-500 hover:text-sky-400 underline transition-colors"
+                  >
+                    {isSendingReset ? 'Sending setup link...' : 'Forgot or need setup link?'}
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="••••••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full pl-9 pr-9 py-2 bg-muted/50 border border-border rounded-xl text-foreground text-xs focus:outline-none focus:ring-1 focus:ring-accent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-2.5 text-muted-foreground hover:text-foreground"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs transition-colors flex items-center justify-center gap-2 shadow-xs disabled:opacity-50 mt-2"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Verifying Credentials...</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="w-4 h-4" />
+                    <span>Authenticate & Enter Portal</span>
+                  </>
+                )}
+              </button>
+
+              <div className="pt-3 border-t border-border/60 text-center text-[11px] text-muted-foreground space-y-1">
+                <p>Security Notice: Cross-client access and self-assigned roles are strictly prevented.</p>
+                <p>Internal CRM data and proprietary team notes are completely hidden from client accounts.</p>
+              </div>
+            </form>
+          )}
         </div>
       </div>
     </div>

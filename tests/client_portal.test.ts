@@ -866,6 +866,207 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(vanguardStillActive.authorized).toBe(true);
     expect(vanguardStillActive.client?.id).toBe(client2.id);
   });
+
+  it('15. Client Portal Password Setup, Reset, and Multi-Client Dynamic Authentication Flow', async () => {
+    const {
+      registerClient,
+      registerCompany,
+      registerPortalUser,
+      checkClientOrganizationAuthorization,
+    } = await import('../src/lib/invitationRegistry');
+
+    const store = useRevRecoveryStore.getState();
+
+    // 1. Create two distinct client companies dynamically
+    const alphaCompany = await store.addCompany({
+      name: 'Alpha Quantum Corp',
+      industry: 'Quantum Computing',
+    });
+    const betaCompany = await store.addCompany({
+      name: 'Beta Biotech Labs',
+      industry: 'Life Sciences',
+    });
+
+    // 2. Add Alpha client with dynamic email
+    const alphaEmail = 'lead.alpha@alphaquantum.io';
+    const alphaClient = await store.addClient({
+      companyId: alphaCompany.id,
+      contactEmail: alphaEmail,
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
+      monthlyValue: 12000,
+      contractStatus: 'Active',
+      startDate: '2026-10-01',
+      renewalDate: '2027-10-01',
+      accountOwner: 'Sanskar Anand',
+      servicesPurchased: ['Executive Meetings Engine'],
+      currentObjectives: 'Scale Enterprise Quantum Accounts',
+      successMetrics: '20 meetings/mo',
+      notes: 'Alpha confidential internal metrics',
+      operationalMetrics: {
+        id: 'metrics-alpha',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 500,
+        contactsReached: 420,
+        totalReplies: 60,
+        positiveReplies: 30,
+        qualifiedProspects: 22,
+        meetingsBooked: 15,
+        meetingsCompleted: 12,
+        dealsClosed: 4,
+        revenueGenerated: 80000,
+        internalNotes: 'Alpha confidential notes - must NOT be exposed',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 3. Add Beta client with dynamic email
+    const betaEmail = 'lead.beta@betabiotech.org';
+    const betaClient = await store.addClient({
+      companyId: betaCompany.id,
+      contactEmail: betaEmail,
+      portalAccessStatus: 'Not Invited',
+      portalUserIds: [],
+      monthlyValue: 9000,
+      contractStatus: 'Active',
+      startDate: '2026-10-01',
+      renewalDate: '2027-10-01',
+      accountOwner: 'Sanskar Anand',
+      servicesPurchased: ['Outbound Outreach'],
+      currentObjectives: 'BioTech pharma outreach',
+      successMetrics: '15 meetings/mo',
+      notes: 'Beta confidential internal metrics',
+      operationalMetrics: {
+        id: 'metrics-beta',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 350,
+        contactsReached: 280,
+        totalReplies: 40,
+        positiveReplies: 20,
+        qualifiedProspects: 14,
+        meetingsBooked: 10,
+        meetingsCompleted: 8,
+        dealsClosed: 2,
+        revenueGenerated: 45000,
+        internalNotes: 'Beta confidential notes - must NOT be exposed',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 4. Invite Alpha representative dynamically
+    const alphaInvite = await store.inviteClientPortalUser(alphaClient.id, {
+      email: alphaEmail,
+      name: 'Dr. Alpha Representative',
+      role: 'client_admin',
+    });
+    registerCompany(alphaCompany);
+    registerClient(alphaClient, alphaCompany);
+    registerPortalUser(alphaInvite.user);
+
+    // 5. Invite Beta representative dynamically
+    const betaInvite = await store.inviteClientPortalUser(betaClient.id, {
+      email: betaEmail,
+      name: 'Dr. Beta Representative',
+      role: 'client_admin',
+    });
+    registerCompany(betaCompany);
+    registerClient(betaClient, betaCompany);
+    registerPortalUser(betaInvite.user);
+
+    // 6. Verify password reset authorization for uninvited/random email -> MUST BE REJECTED
+    const uninvitedCheck = checkClientOrganizationAuthorization('random.hacker@evil.com', alphaClient.id);
+    expect(uninvitedCheck.authorized).toBe(false);
+    expect(uninvitedCheck.statusCode).toBe(404);
+
+    // 7. Verify password reset authorization for cross-client attempt -> MUST BE REJECTED
+    const crossResetCheck = checkClientOrganizationAuthorization(betaEmail, alphaClient.id);
+    expect(crossResetCheck.authorized).toBe(false);
+    expect(crossResetCheck.statusCode).toBe(403);
+
+    // 8. Verify password reset authorization for authorized Alpha email
+    const alphaResetCheck = checkClientOrganizationAuthorization(alphaEmail, alphaClient.id);
+    expect(alphaResetCheck.authorized).toBe(true);
+    expect(alphaResetCheck.client?.id).toBe(alphaClient.id);
+    expect(alphaResetCheck.company?.name).toBe('Alpha Quantum Corp');
+
+    // 9. Verify password reset authorization for authorized Beta email
+    const betaResetCheck = checkClientOrganizationAuthorization(betaEmail, betaClient.id);
+    expect(betaResetCheck.authorized).toBe(true);
+    expect(betaResetCheck.client?.id).toBe(betaClient.id);
+    expect(betaResetCheck.company?.name).toBe('Beta Biotech Labs');
+
+    // 10. Test password reset route handler behavior (POST /api/client-portal/reset-password)
+    const { POST: resetPasswordHandler } = await import('../src/app/api/client-portal/reset-password/route');
+
+    // Cross-client reset request should return 403
+    const crossReq = new Request('http://localhost:3000/api/client-portal/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: betaEmail, clientId: alphaClient.id }),
+    });
+    const crossRes = await resetPasswordHandler(crossReq as any);
+    expect(crossRes.status).toBe(403);
+    const crossData = await crossRes.json();
+    expect(crossData.success).toBe(false);
+
+    // Legitimate Alpha reset request should succeed
+    const validReq = new Request('http://localhost:3000/api/client-portal/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: alphaEmail, clientId: alphaClient.id }),
+    });
+    const validRes = await resetPasswordHandler(validReq as any);
+    expect(validRes.status).toBe(200);
+    const validData = await validRes.json();
+    expect(validData.success).toBe(true);
+    expect(validData.email).toBe(alphaEmail);
+
+    // 11. Test Auth route handler with action === 'resetPassword' (POST /api/client-portal/auth)
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+
+    // Reset password with invalid short password should return 400
+    const shortPwReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'resetPassword',
+        oobCode: 'valid_mock_oob_code',
+        newPassword: '123',
+        email: alphaEmail,
+        clientId: alphaClient.id,
+      }),
+    });
+    const shortPwRes = await authHandler(shortPwReq as any);
+    expect(shortPwRes.status).toBe(400);
+
+    // Test completed reset password activates the user and logs them in
+    const resetCompleteReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'resetPassword',
+        oobCode: 'valid_mock_oob_code',
+        newPassword: 'StrongPassword!2026',
+        email: alphaEmail,
+        clientId: alphaClient.id,
+      }),
+    });
+    const resetCompleteRes = await authHandler(resetCompleteReq as any);
+    expect(resetCompleteRes.status).toBe(200);
+    const resetCompleteData = await resetCompleteRes.json();
+    expect(resetCompleteData.success).toBe(true);
+    expect(resetCompleteData.user.email).toBe(alphaEmail);
+    expect(resetCompleteData.user.status).toBe('active');
+    expect(resetCompleteData.client.id).toBe(alphaClient.id);
+  });
 });
 
 
