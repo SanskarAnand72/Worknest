@@ -248,6 +248,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Securely link representative to client record in registry
+    const passwordHash = hashPortalPassword(password);
     const portalUser: ClientPortalUser = {
       id: existingUser?.id || `cpu-${targetClient.id}-${Date.now().toString(36)}`,
       clientId: targetClient.id,
@@ -259,16 +260,21 @@ export async function POST(req: NextRequest) {
       invitedBy: existingUser?.invitedBy || 'admin',
       invitedAt: existingUser?.invitedAt || Date.now(),
       lastLoginAt: existingUser?.lastLoginAt,
+      portalPasswordHash: passwordHash,
       createdAt: existingUser?.createdAt || Date.now(),
     };
 
     registerPortalUser(portalUser);
-    registerCredentialHash(normalizedEmail, hashPortalPassword(password));
+    registerCredentialHash(normalizedEmail, passwordHash);
     markEmailVerified(normalizedEmail);
 
     // Update target client status
     targetClient.portalAccessStatus = 'Active';
     targetClient.contactEmail = normalizedEmail;
+    targetClient.portalPasswordHash = passwordHash;
+    if (targetClient.portalSettings) {
+      targetClient.portalSettings.portalPasswordHash = passwordHash;
+    }
     if (!targetClient.portalUserIds) {
       targetClient.portalUserIds = [];
     }
@@ -285,6 +291,7 @@ export async function POST(req: NextRequest) {
       success: true,
       message: `Client Portal access active for ${normalizedEmail}.`,
       note: authMethodNote,
+      portalPasswordHash: passwordHash,
       user: {
         id: portalUser.id,
         email: portalUser.email,
@@ -293,12 +300,14 @@ export async function POST(req: NextRequest) {
         status: portalUser.status,
         clientId: portalUser.clientId,
         clientName: portalUser.clientName,
+        portalPasswordHash: passwordHash,
       },
       client: {
         id: targetClient.id,
         companyId: targetClient.companyId,
         portalAccessStatus: targetClient.portalAccessStatus,
         contactEmail: targetClient.contactEmail,
+        portalPasswordHash: passwordHash,
       },
       portalUrl,
     });

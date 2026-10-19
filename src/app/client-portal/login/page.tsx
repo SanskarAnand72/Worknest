@@ -408,6 +408,11 @@ function ClientPortalLoginForm() {
         ? companies.find((comp) => comp.id === localClient.companyId)
         : undefined;
 
+      const portalPasswordHash =
+        localClient?.portalPasswordHash ||
+        localClient?.portalSettings?.portalPasswordHash ||
+        clientPortalUsers.find((u) => u.email.toLowerCase() === normalizedEmail)?.portalPasswordHash;
+
       // 1. Attempt authentication via Client Portal Auth API
       try {
         const res = await fetch('/api/client-portal/auth', {
@@ -419,6 +424,7 @@ function ClientPortalLoginForm() {
             clientId: urlClientId || localClient?.id,
             client: localClient,
             company: localCompany,
+            portalPasswordHash,
           }),
         });
 

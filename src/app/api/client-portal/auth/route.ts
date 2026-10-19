@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { ClientPortalUser } from '@/types/revrecovery';
+import { Client, ClientPortalUser } from '@/types/revrecovery';
 import {
   checkClientOrganizationAuthorization,
   ensureRegistryInitialized,
@@ -14,11 +14,14 @@ import {
 } from '@/lib/invitationRegistry';
 
 /**
- * Helper to authenticate returning user via Firebase Auth Identity Toolkit REST API
+ * Helper to authenticate returning user via portal password hash or Firebase Auth Identity Toolkit REST API
  */
 async function authenticateWithFirebase(
   email: string,
-  pass: string
+  pass: string,
+  client?: Client | null,
+  user?: ClientPortalUser | null,
+  portalPasswordHash?: string | null
 ): Promise<{
   success: boolean;
   error?: string;
@@ -29,6 +32,37 @@ async function authenticateWithFirebase(
   displayName?: string;
 }> {
   const normalizedEmail = email.trim().toLowerCase();
+  const inputHash = hashPortalPassword(pass);
+
+  if (isEmailMarkedUnverified(normalizedEmail)) {
+    return {
+      success: false,
+      requiresVerification: true,
+      canResendVerification: true,
+      error:
+        'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
+    };
+  }
+
+  // 1. Check against explicitly registered or client-bound portal password hash
+  const expectedHash =
+    portalPasswordHash ||
+    client?.portalPasswordHash ||
+    client?.portalSettings?.portalPasswordHash ||
+    user?.portalPasswordHash;
+
+  if (expectedHash && expectedHash === inputHash) {
+    return { success: true, displayName: client?.id };
+  }
+
+  if (hasRegisteredCredentialHash(normalizedEmail)) {
+    const matches = verifyCredentialHash(normalizedEmail, inputHash);
+    if (matches) {
+      return { success: true, displayName: client?.id };
+    }
+  }
+
+  // 2. Check Firebase Authentication
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 
   if (apiKey) {
@@ -76,45 +110,12 @@ async function authenticateWithFirebase(
           canResetPassword: true,
         };
       }
-
-      if (errorMsg === 'INVALID_PASSWORD' || errorMsg === 'INVALID_LOGIN_CREDENTIALS') {
-        return {
-          success: false,
-          error: 'Incorrect password for this account.',
-          canResetPassword: true,
-        };
-      }
     } catch (err) {
       console.warn('Firebase Auth REST check fallback notice:', err);
     }
   }
 
-  if (isEmailMarkedUnverified(normalizedEmail)) {
-    return {
-      success: false,
-      requiresVerification: true,
-      canResendVerification: true,
-      error:
-        'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
-    };
-  }
-
-  // Fallback verification against registered credential hash (for offline/test environments)
-  if (hasRegisteredCredentialHash(normalizedEmail)) {
-    const inputHash = hashPortalPassword(pass);
-    const matches = verifyCredentialHash(normalizedEmail, inputHash);
-    if (!matches) {
-      return {
-        success: false,
-        error: 'Incorrect password for this account.',
-        canResetPassword: true,
-      };
-    }
-
-    return { success: true };
-  }
-
-  if (!apiKey) {
+  if (!apiKey && !expectedHash && !hasRegisteredCredentialHash(normalizedEmail)) {
     return { success: true };
   }
 
@@ -143,6 +144,7 @@ export async function POST(req: NextRequest) {
       clientId,
       client: clientPayload,
       company: companyPayload,
+      portalPasswordHash: portalPasswordHashPayload,
     } = body;
 
     // Handle First-Time Password Setup for Invited Representatives
@@ -245,18 +247,24 @@ export async function POST(req: NextRequest) {
       }
 
       // User status updated to 'active' upon successful password setup
+      const passwordHash = hashPortalPassword(password);
       const updatedUser: ClientPortalUser = {
         ...invitedUser,
         status: 'active',
+        portalPasswordHash: passwordHash,
         lastLoginAt: Date.now(),
       };
       registerPortalUser(updatedUser);
-      registerCredentialHash(normalizedEmail, hashPortalPassword(password));
+      registerCredentialHash(normalizedEmail, passwordHash);
 
+      client.portalPasswordHash = passwordHash;
+      if (client.portalSettings) {
+        client.portalSettings.portalPasswordHash = passwordHash;
+      }
       if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
         client.portalAccessStatus = 'Active';
-        registerClient(client, company);
       }
+      registerClient(client, company);
 
       return NextResponse.json({
         success: true,
@@ -371,18 +379,24 @@ export async function POST(req: NextRequest) {
       }
 
       const { user: invitedUser, client, company } = authCheck;
+      const passwordHash = hashPortalPassword(newPassword);
       const updatedUser: ClientPortalUser = {
         ...invitedUser,
         status: 'active',
+        portalPasswordHash: passwordHash,
         lastLoginAt: Date.now(),
       };
       registerPortalUser(updatedUser);
-      registerCredentialHash(resetEmail, hashPortalPassword(newPassword));
+      registerCredentialHash(resetEmail, passwordHash);
 
+      client.portalPasswordHash = passwordHash;
+      if (client.portalSettings) {
+        client.portalSettings.portalPasswordHash = passwordHash;
+      }
       if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
         client.portalAccessStatus = 'Active';
-        registerClient(client, company);
       }
+      registerClient(client, company);
 
       return NextResponse.json({
         success: true,
@@ -452,8 +466,14 @@ export async function POST(req: NextRequest) {
 
     const { user: invitedUser, client, company } = authCheck;
 
-    // 2. Authenticate credentials via Firebase Auth
-    const authResult = await authenticateWithFirebase(normalizedEmail, password);
+    // 2. Authenticate credentials via portal password hash or Firebase Auth
+    const authResult = await authenticateWithFirebase(
+      normalizedEmail,
+      password,
+      client,
+      invitedUser,
+      portalPasswordHashPayload
+    );
     if (!authResult.success) {
       if (authResult.requiresVerification) {
         return NextResponse.json(

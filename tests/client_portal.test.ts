@@ -1892,6 +1892,38 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     const crossData2 = await crossAttackRes2.json();
     expect(crossData2.error).toContain('Security Error: This email invitation is not authorized to access the requested client organization.');
     expect(crossData2.diagnostic.code).toBe('CLIENT_ORG_MISMATCH');
+
+    // 9. When portalPasswordHash is attached to client record, login succeeds directly with that password
+    const portalHashLoginRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'founder.client01@gmail.com',
+          password: gmailPassword,
+          clientId: clientGmail.id,
+          portalPasswordHash: gmailAccessData.portalPasswordHash,
+        }),
+      }) as any
+    );
+    expect(portalHashLoginRes.status).toBe(200);
+    const portalHashData = await portalHashLoginRes.json();
+    expect(portalHashData.success).toBe(true);
+
+    // 10. Entering an incorrect password fails with 401
+    const wrongPassRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'founder.client01@gmail.com',
+          password: 'CompletelyWrongPassword!',
+          clientId: clientGmail.id,
+          portalPasswordHash: gmailAccessData.portalPasswordHash,
+        }),
+      }) as any
+    );
+    expect(wrongPassRes.status).toBe(401);
   });
 });
 

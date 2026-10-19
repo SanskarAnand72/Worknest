@@ -49,6 +49,7 @@ import {
   ClientRole,
   getClientPortalAccessStatus,
 } from '@/types/revrecovery';
+import { hashPortalPassword } from '@/lib/invitationRegistry';
 import { EditClientModal } from './EditClientModal';
 import { DeleteClientModal } from './DeleteClientModal';
 import { ClientPortalManageModal } from './ClientPortalManageModal';
@@ -330,6 +331,8 @@ export const ClientsView: React.FC = () => {
     setPortalActionSuccess(null);
 
     try {
+      const passwordHash = hashPortalPassword(portalPassword);
+
       // 1. Call server API to create/update Firebase Auth and link to client
       const res = await fetch('/api/client-portal/create-access', {
         method: 'POST',
@@ -338,6 +341,7 @@ export const ClientsView: React.FC = () => {
           clientId: activeClient.id,
           email: emailTrimmed,
           password: portalPassword,
+          portalPasswordHash: passwordHash,
           name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
           role: portalInviteRole,
           client: activeClient,
@@ -362,11 +366,23 @@ export const ClientsView: React.FC = () => {
         clientName: activeCompany?.name || 'Client',
         status: 'active',
         role: portalInviteRole,
+        portalPasswordHash: passwordHash,
       });
 
       await updateClient(activeClient.id, {
         contactEmail: emailTrimmed,
         portalAccessStatus: 'Active',
+        portalPasswordHash: passwordHash,
+        portalSettings: {
+          ...(activeClient.portalSettings || {
+            enabled: true,
+            allowedMetrics: ['leads', 'outreach', 'meetings', 'conversions'],
+            allowedTabs: ['overview', 'campaigns', 'meetings'],
+            kpiTargets: {},
+            sharedDocIds: [],
+          }),
+          portalPasswordHash: passwordHash,
+        },
       });
 
       const origin =

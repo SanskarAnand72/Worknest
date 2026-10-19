@@ -165,6 +165,7 @@ export interface ClientPortalSettings {
   };
   sharedDocIds: string[];
   sharedNotes?: string;
+  portalPasswordHash?: string;
 }
 
 export type ClientRole = 'client_guest' | 'client_admin';
@@ -180,6 +181,7 @@ export interface ClientPortalUser {
   invitedBy: string;
   invitedAt: number;
   lastLoginAt?: number;
+  portalPasswordHash?: string;
   createdAt: number;
 }
 
@@ -204,6 +206,7 @@ export interface Client {
   discoveryQuestionnaire: ClientDiscoveryQuestionnaire;
   notes: string;
   portalSettings?: ClientPortalSettings;
+  portalPasswordHash?: string;
   portalUserIds?: string[];
   archived?: boolean;
   createdAt: number;
