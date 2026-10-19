@@ -25,6 +25,7 @@ export interface InvitationRegistry {
   portalUsers: Map<string, ClientPortalUser>;
   aliases: Map<string, string>; // maps (clientId | companyId | slug) -> canonicalOrgKey (lowercased)
   credentialHashes: Map<string, string>; // maps normalizedEmail -> password hash
+  unverifiedEmails: Set<string>; // tracks emails requiring verification
   isInitialized: boolean;
 }
 
@@ -35,6 +36,7 @@ const globalRegistry: InvitationRegistry = {
   portalUsers: new Map(),
   aliases: new Map(),
   credentialHashes: new Map(),
+  unverifiedEmails: new Set(),
   isInitialized: false,
 };
 
@@ -61,6 +63,21 @@ export function verifyCredentialHash(email: string, passwordHash: string): boole
   const stored = reg.credentialHashes.get(email.toLowerCase().trim());
   if (!stored) return true;
   return stored === passwordHash;
+}
+
+export function markEmailUnverified(email: string): void {
+  const reg = ensureRegistryInitialized();
+  reg.unverifiedEmails.add(email.toLowerCase().trim());
+}
+
+export function markEmailVerified(email: string): void {
+  const reg = ensureRegistryInitialized();
+  reg.unverifiedEmails.delete(email.toLowerCase().trim());
+}
+
+export function isEmailMarkedUnverified(email: string): boolean {
+  const reg = ensureRegistryInitialized();
+  return reg.unverifiedEmails.has(email.toLowerCase().trim());
 }
 
 export function hasRegisteredCredentialHash(email: string): boolean {
@@ -362,15 +379,18 @@ export function checkClientOrganizationAuthorization(
     else if (reg.aliases.get(normRequested) === authorizedOrgKey) {
       isMatch = true;
     }
-    // Check if requestedClientId is a registered client belonging to the same company
+    // Check if requestedClientId is a registered client belonging to the same company or matching contactEmail
     else if (reg.clients.has(requestedClientId)) {
       const matchingClient = reg.clients.get(requestedClientId)!;
       const matchingCompany = reg.companies.get(matchingClient.companyId);
-      if (matchingCompany && matchingCompany.name.toLowerCase().trim() === authorizedOrgKey) {
+      if (
+        (matchingCompany && matchingCompany.name.toLowerCase().trim() === authorizedOrgKey) ||
+        (matchingClient.contactEmail && matchingClient.contactEmail.toLowerCase().trim() === normalizedEmail)
+      ) {
         isMatch = true;
         // Bind to this active client record
         client = matchingClient;
-        company = matchingCompany;
+        if (matchingCompany) company = matchingCompany;
       }
     }
     // Check if requestedClientId is a registered company with matching name

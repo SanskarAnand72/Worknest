@@ -51,9 +51,14 @@ function ClientPortalLoginForm() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
+  const [isVerifyingEmail, setIsVerifyingEmail] = useState(false);
+  const [emailVerificationComplete, setEmailVerificationComplete] = useState(false);
+  const [requiresVerification, setRequiresVerification] = useState(false);
+  const [isResendingVerification, setIsResendingVerification] = useState(false);
+
   const mode = searchParams.get('mode');
   const oobCode = searchParams.get('oobCode');
-  const isResetFlow = mode === 'resetPassword' || Boolean(oobCode);
+  const isResetFlow = mode === 'resetPassword' || (Boolean(oobCode) && mode !== 'verifyEmail');
 
   useEffect(() => {
     initWorkspace();
@@ -89,6 +94,80 @@ function ClientPortalLoginForm() {
         .catch(() => {});
     }
   }, [searchParams]);
+
+  // Handle Firebase Email Verification link click (mode=verifyEmail&oobCode=...)
+  useEffect(() => {
+    if (mode === 'verifyEmail' && oobCode) {
+      setIsVerifyingEmail(true);
+      setErrorMessage(null);
+      setInfoMessage(null);
+
+      fetch('/api/client-portal/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm', oobCode }),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success) {
+            setEmailVerificationComplete(true);
+            setRequiresVerification(false);
+            setInfoMessage(
+              data.message || 'Your email address has been verified successfully! You may now sign in below.'
+            );
+            if (data.email) {
+              setEmail(data.email);
+            }
+          } else {
+            setErrorMessage(data.error || 'The email verification link is invalid or has expired.');
+          }
+        })
+        .catch(() => {
+          setErrorMessage('Failed to verify email link. Please try again or request a new link.');
+        })
+        .finally(() => {
+          setIsVerifyingEmail(false);
+        });
+    }
+  }, [mode, oobCode]);
+
+  // Resend Verification Email Handler
+  const handleResendVerificationLink = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+      setErrorMessage('Please enter your business email address above to receive a verification link.');
+      return;
+    }
+
+    setIsResendingVerification(true);
+    setErrorMessage(null);
+    setInfoMessage(null);
+
+    try {
+      const res = await fetch('/api/client-portal/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'resend',
+          email: normalizedEmail,
+          password: password || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setInfoMessage(
+          data.message || `A fresh verification link has been sent to ${normalizedEmail}. Please check your inbox and spam folder.`
+        );
+      } else {
+        setErrorMessage(data.error || 'Failed to dispatch verification email.');
+      }
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Error sending verification link.');
+    } finally {
+      setIsResendingVerification(false);
+    }
+  };
 
   const handleSendPasswordReset = async () => {
     const normalizedEmail = email.trim().toLowerCase();
@@ -344,6 +423,9 @@ function ClientPortalLoginForm() {
             });
           }
         } else {
+          if (data.requiresVerification) {
+            setRequiresVerification(true);
+          }
           if (data.diagnostic) {
             console.warn('[RevRecovery Portal Security Diagnostic]', data.diagnostic);
           }
@@ -740,7 +822,55 @@ function ClientPortalLoginForm() {
                 </div>
               )}
 
-              {canResetPassword && (
+              {isVerifyingEmail && (
+                <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center gap-2.5 text-xs">
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                  <span className="leading-relaxed">Verifying your email address with Firebase Authentication...</span>
+                </div>
+              )}
+
+              {emailVerificationComplete && (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-start gap-2.5 text-xs">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">Your email has been verified! You can now log in below.</span>
+                </div>
+              )}
+
+              {requiresVerification && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-2 text-xs">
+                  <div className="flex items-start gap-2 text-amber-400">
+                    <Mail className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-semibold text-foreground text-[11px]">Email Verification Required</p>
+                      <p className="text-muted-foreground text-[11px] leading-relaxed">
+                        A verification link was dispatched to{' '}
+                        <span className="font-mono text-foreground font-medium">{email || 'your email'}</span>.
+                        Please check your inbox (and spam/junk folder) and click the link to verify your account.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResendVerificationLink}
+                    disabled={isResendingVerification}
+                    className="w-full py-1.5 px-3 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium text-[11px] transition-colors flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-50"
+                  >
+                    {isResendingVerification ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Sending Verification Link...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Mail className="w-3.5 h-3.5" />
+                        <span>Resend Verification Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {canResetPassword && !requiresVerification && (
                 <div className="p-3 bg-sky-500/10 border border-sky-500/20 rounded-xl space-y-2 text-xs">
                   <div className="flex items-start gap-2 text-sky-400">
                     <Key className="w-4 h-4 shrink-0 mt-0.5" />

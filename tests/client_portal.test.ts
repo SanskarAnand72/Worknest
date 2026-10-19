@@ -1470,6 +1470,272 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     const revokedLoginData = await revokedLoginRes.json();
     expect(revokedLoginData.error).toContain('Access Revoked');
   });
+
+  it('18. Email verification lifecycle: unverified enforcement, resend, invalid/expired code handling, and successful verification', async () => {
+    const store = useRevRecoveryStore.getState();
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+    const { POST: verifyEmailHandler } = await import('../src/app/api/client-portal/verify-email/route');
+    const { markEmailUnverified, markEmailVerified } = await import('../src/lib/invitationRegistry');
+
+    const company = await store.addCompany({ name: 'Verification Logistics Corp' });
+    const client = await store.addClient({
+      companyId: company.id,
+      monthlyValue: 7500,
+      contractStatus: 'Active',
+    });
+
+    const testEmail = 'ops.director@verificationlogistics.com';
+    const testPassword = 'SecurePass2026!';
+
+    // 1. Admin creates access
+    const createReq = new Request('http://localhost:3000/api/client-portal/create-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: client.id,
+        email: testEmail,
+        password: testPassword,
+        name: 'Ops Director',
+        client,
+        company,
+      }),
+    });
+    const createRes = await createAccessHandler(createReq as any);
+    expect(createRes.status).toBe(200);
+
+    // 2. Mark email as unverified (simulating new account before inbox link click)
+    markEmailUnverified(testEmail);
+
+    // 3. Login attempt while unverified must be rejected with 403 and requiresVerification: true
+    const unverifiedLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: testEmail,
+        password: testPassword,
+        clientId: client.id,
+      }),
+    });
+    const unverifiedRes = await authHandler(unverifiedLoginReq as any);
+    expect(unverifiedRes.status).toBe(403);
+    const unverifiedData = await unverifiedRes.json();
+    expect(unverifiedData.success).toBe(false);
+    expect(unverifiedData.requiresVerification).toBe(true);
+    expect(unverifiedData.canResendVerification).toBe(true);
+    expect(unverifiedData.error).toContain('Email verification is required');
+
+    // 4. Resend verification link
+    const resendReq = new Request('http://localhost:3000/api/client-portal/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'resend',
+        email: testEmail,
+      }),
+    });
+    const resendRes = await verifyEmailHandler(resendReq as any);
+    expect(resendRes.status).toBe(200);
+    const resendData = await resendRes.json();
+    expect(resendData.success).toBe(true);
+
+    // 5. Submit invalid oobCode to verify-email route -> safely rejected
+    const invalidVerifyReq = new Request('http://localhost:3000/api/client-portal/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'confirm',
+        oobCode: 'invalid_expired_token_mock',
+      }),
+    });
+    const invalidVerifyRes = await verifyEmailHandler(invalidVerifyReq as any);
+    expect(invalidVerifyRes.status).toBe(400);
+    const invalidVerifyData = await invalidVerifyRes.json();
+    expect(invalidVerifyData.success).toBe(false);
+    expect(invalidVerifyData.error).toContain('invalid or has expired');
+
+    // 6. Submit valid oobCode -> successfully verified
+    const validVerifyReq = new Request('http://localhost:3000/api/client-portal/verify-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'confirm',
+        oobCode: 'valid_verification_token_mock',
+        email: testEmail,
+      }),
+    });
+    const validVerifyRes = await verifyEmailHandler(validVerifyReq as any);
+    expect(validVerifyRes.status).toBe(200);
+    const validVerifyData = await validVerifyRes.json();
+    expect(validVerifyData.success).toBe(true);
+    expect(validVerifyData.message).toContain('verified successfully');
+
+    // 7. Clear unverified status (simulating verification completion)
+    markEmailVerified(testEmail);
+
+    // 8. Login succeeds and enters portal dashboard
+    const verifiedLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: testEmail,
+        password: testPassword,
+        clientId: client.id,
+      }),
+    });
+    const verifiedLoginRes = await authHandler(verifiedLoginReq as any);
+    expect(verifiedLoginRes.status).toBe(200);
+    const verifiedLoginData = await verifiedLoginRes.json();
+    expect(verifiedLoginData.success).toBe(true);
+    expect(verifiedLoginData.user.email).toBe(testEmail);
+    expect(verifiedLoginData.client.id).toBe(client.id);
+  });
+
+  it('19. Multi-Client Dynamic Binding & Strict Cross-Tenant Prevention (Client A vs Client B isolation)', async () => {
+    const store = useRevRecoveryStore.getState();
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+
+    // 1. Create Organization Alpha
+    const compAlpha = await store.addCompany({ name: 'Alpha Dynamics Inc' });
+    const clientAlpha = await store.addClient({
+      companyId: compAlpha.id,
+      monthlyValue: 12000,
+      contractStatus: 'Active',
+    });
+    const emailAlpha = 'exec.alpha@alphadynamics.com';
+    const passAlpha = 'AlphaPass2026!';
+
+    const createAlphaRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: clientAlpha.id,
+          email: emailAlpha,
+          password: passAlpha,
+          name: 'Alpha Executive',
+          client: clientAlpha,
+          company: compAlpha,
+        }),
+      }) as any
+    );
+    expect(createAlphaRes.status).toBe(200);
+
+    // 2. Create Organization Beta
+    const compBeta = await store.addCompany({ name: 'Beta Cloud Solutions' });
+    const clientBeta = await store.addClient({
+      companyId: compBeta.id,
+      monthlyValue: 9000,
+      contractStatus: 'Active',
+    });
+    const emailBeta = 'exec.beta@betacloud.com';
+    const passBeta = 'BetaPass2026!';
+
+    const createBetaRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: clientBeta.id,
+          email: emailBeta,
+          password: passBeta,
+          name: 'Beta Executive',
+          client: clientBeta,
+          company: compBeta,
+        }),
+      }) as any
+    );
+    expect(createBetaRes.status).toBe(200);
+
+    // 3. Client Alpha logs in and sees only Alpha data
+    const loginAlphaRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailAlpha,
+          password: passAlpha,
+          clientId: clientAlpha.id,
+        }),
+      }) as any
+    );
+    expect(loginAlphaRes.status).toBe(200);
+    const alphaData = await loginAlphaRes.json();
+    expect(alphaData.client.id).toBe(clientAlpha.id);
+    expect(alphaData.company.name).toBe('Alpha Dynamics Inc');
+
+    // 4. Client Beta logs in and sees only Beta data
+    const loginBetaRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailBeta,
+          password: passBeta,
+          clientId: clientBeta.id,
+        }),
+      }) as any
+    );
+    expect(loginBetaRes.status).toBe(200);
+    const betaData = await loginBetaRes.json();
+    expect(betaData.client.id).toBe(clientBeta.id);
+    expect(betaData.company.name).toBe('Beta Cloud Solutions');
+
+    // 5. Cross-tenant attack: Client Alpha attempts to access Client Beta's portal
+    const attackAlphaToBetaRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailAlpha,
+          password: passAlpha,
+          clientId: clientBeta.id, // Trying to view Beta's portal
+        }),
+      }) as any
+    );
+    expect(attackAlphaToBetaRes.status).toBe(403);
+    const attackAlphaData = await attackAlphaToBetaRes.json();
+    expect(attackAlphaData.error).toContain(
+      'Security Error: This email invitation is not authorized to access the requested client organization.'
+    );
+    expect(attackAlphaData.diagnostic.code).toBe('CLIENT_ORG_MISMATCH');
+
+    // 6. Cross-tenant attack: Client Beta attempts to access Client Alpha's portal
+    const attackBetaToAlphaRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: emailBeta,
+          password: passBeta,
+          clientId: clientAlpha.id, // Trying to view Alpha's portal
+        }),
+      }) as any
+    );
+    expect(attackBetaToAlphaRes.status).toBe(403);
+    const attackBetaData = await attackBetaToAlphaRes.json();
+    expect(attackBetaData.error).toContain(
+      'Security Error: This email invitation is not authorized to access the requested client organization.'
+    );
+    expect(attackBetaData.diagnostic.code).toBe('CLIENT_ORG_MISMATCH');
+
+    // 7. Uninvited user rejection
+    const uninvitedRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'random.uninvited.stranger@domain.com',
+          password: 'SomePassword123!',
+          clientId: clientAlpha.id,
+        }),
+      }) as any
+    );
+    expect(uninvitedRes.status).toBe(404);
+    const uninvitedData = await uninvitedRes.json();
+    expect(uninvitedData.error).toContain('This email address has not been invited');
+  });
 });
 
 

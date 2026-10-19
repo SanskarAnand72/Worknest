@@ -3,6 +3,7 @@ import {
   ensureRegistryInitialized,
   hashPortalPassword,
   registerClient,
+  registerCompany,
   registerCredentialHash,
   registerPortalUser,
 } from '@/lib/invitationRegistry';
@@ -25,7 +26,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { clientId, email, password, name, role, currentPassword } = body;
+    const {
+      clientId,
+      email,
+      password,
+      name,
+      role,
+      currentPassword,
+      client: clientPayload,
+      company: companyPayload,
+    } = body;
 
     // 1. Validation
     if (!clientId || typeof clientId !== 'string') {
@@ -51,8 +61,19 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.trim().toLowerCase();
 
-    // 2. Resolve Client & Company
+    // 2. Resolve Client & Company (register payload if passed from client store)
+    if (clientPayload && clientPayload.id) {
+      registerClient(clientPayload, companyPayload);
+    }
+    if (companyPayload && companyPayload.id) {
+      registerCompany(companyPayload);
+    }
+
     let targetClient = reg.clients.get(clientId);
+    if (!targetClient && clientPayload) {
+      targetClient = clientPayload;
+      reg.clients.set(clientPayload.id, clientPayload);
+    }
     if (!targetClient) {
       targetClient = Array.from(reg.clients.values()).find(
         (c) =>
@@ -68,7 +89,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let company = reg.companies.get(targetClient.companyId);
+    let company =
+      (companyPayload && companyPayload.id ? companyPayload : null) ||
+      reg.companies.get(targetClient.companyId);
     if (!company) {
       company = Array.from(reg.companies.values()).find(
         (c) => c.id.toLowerCase() === targetClient!.companyId?.toLowerCase()
@@ -79,7 +102,12 @@ export async function POST(req: NextRequest) {
 
     // 3. Multi-Tenant Conflict Check: Verify email is not linked to ANOTHER client organization
     const existingUser = reg.portalUsers.get(normalizedEmail);
-    if (existingUser && existingUser.clientId !== targetClient.id) {
+    // Allow rebinding if it was previously the default seed demo account or an explicit update for this client
+    const isSeedUser = existingUser && existingUser.id === 'cpu-syscraft-aryan';
+    const isSameEmailRebind =
+      targetClient.contactEmail && targetClient.contactEmail.toLowerCase().trim() === normalizedEmail;
+
+    if (existingUser && existingUser.clientId !== targetClient.id && !isSeedUser && !isSameEmailRebind) {
       const otherClient = reg.clients.get(existingUser.clientId);
       const otherCompany = otherClient ? reg.companies.get(otherClient.companyId) : undefined;
       const otherName = existingUser.clientName || otherCompany?.name || existingUser.clientId;
@@ -93,9 +121,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Firebase Authentication Account Provisioning / Password Update
+    // 4. Firebase Authentication Account Provisioning / Password Update & Email Verification Link Dispatch
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
     let authMethodNote = 'Account credentials configured successfully.';
+    let verificationLinkSent = false;
 
     if (apiKey) {
       // Step A: Attempt accounts:signUp to create user with chosen password
@@ -116,6 +145,28 @@ export async function POST(req: NextRequest) {
 
       if (signUpRes.ok && signUpData.idToken) {
         authMethodNote = 'New Firebase Authentication account created with your specified password.';
+
+        // Dispatch real Firebase email verification link to client email inbox
+        try {
+          const verifyRes = await fetch(
+            `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                requestType: 'VERIFY_EMAIL',
+                idToken: signUpData.idToken,
+                continueUrl: 'https://notion-f316c.firebaseapp.com',
+              }),
+            }
+          );
+          if (verifyRes.ok) {
+            verificationLinkSent = true;
+            authMethodNote += ' Verification email dispatched to client inbox.';
+          }
+        } catch (vErr) {
+          console.warn('sendOobCode VERIFY_EMAIL dispatch notice:', vErr);
+        }
       } else if (signUpData.error?.message === 'EMAIL_EXISTS') {
         // Account already exists in Firebase Auth.
         // Step B: Test if the provided password matches
@@ -132,8 +183,29 @@ export async function POST(req: NextRequest) {
           }
         );
 
-        if (testSignInRes.ok) {
+        const testSignInData = await testSignInRes.json();
+
+        if (testSignInRes.ok && testSignInData.idToken) {
           authMethodNote = 'Existing Firebase account verified with matching password.';
+
+          // Send verification link if not yet verified
+          try {
+            const vRes = await fetch(
+              `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  requestType: 'VERIFY_EMAIL',
+                  idToken: testSignInData.idToken,
+                  continueUrl: 'https://notion-f316c.firebaseapp.com',
+                }),
+              }
+            );
+            if (vRes.ok) verificationLinkSent = true;
+          } catch (vErr) {
+            console.warn('Existing user verification dispatch notice:', vErr);
+          }
         } else {
           // Password doesn't match existing password.
           // Step C: If currentPassword provided, update via accounts:update

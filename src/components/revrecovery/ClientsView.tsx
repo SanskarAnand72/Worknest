@@ -150,6 +150,7 @@ export const ClientsView: React.FC = () => {
   const [copiedInviteMsg, setCopiedInviteMsg] = useState(false);
   const [isUpdatingContactEmail, setIsUpdatingContactEmail] = useState(false);
   const [newContactEmail, setNewContactEmail] = useState('');
+  const [isResendingVerification, setIsResendingVerification] = useState<string | null>(null);
 
   // Sync metrics form whenever activeClient changes
   useEffect(() => {
@@ -338,6 +339,8 @@ export const ClientsView: React.FC = () => {
           password: portalPassword,
           name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
           role: portalInviteRole,
+          client: activeClient,
+          company: activeCompany,
         }),
       });
 
@@ -384,6 +387,31 @@ export const ClientsView: React.FC = () => {
       setPortalActionError(err instanceof Error ? err.message : 'Failed to save client access.');
     } finally {
       setIsSavingAccess(false);
+    }
+  };
+
+  // Resend email verification link
+  const handleResendVerificationEmail = async (email: string) => {
+    setIsResendingVerification(email);
+    setPortalActionError(null);
+    setPortalActionSuccess(null);
+
+    try {
+      const res = await fetch('/api/client-portal/verify-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'resend', email }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPortalActionSuccess(data.message || `Verification link dispatched to ${email}!`);
+      } else {
+        setPortalActionError(data.error || 'Failed to dispatch verification email.');
+      }
+    } catch (err: unknown) {
+      setPortalActionError(err instanceof Error ? err.message : 'Error sending verification link.');
+    } finally {
+      setIsResendingVerification(null);
     }
   };
 
@@ -2005,6 +2033,27 @@ RevRecovery Growth Team`;
                               >
                                 <Copy className="w-3 h-3" />
                                 <span>Copy Link</span>
+                              </button>
+
+                              {/* Resend Verification Email */}
+                              <button
+                                type="button"
+                                disabled={isResendingVerification === user.email}
+                                onClick={() => handleResendVerificationEmail(user.email)}
+                                className="px-2.5 py-1 rounded-md border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 text-[11px] font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
+                                title="Resend email verification link"
+                              >
+                                {isResendingVerification === user.email ? (
+                                  <>
+                                    <RefreshCw className="w-3 h-3 animate-spin" />
+                                    <span>Sending...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Mail className="w-3 h-3" />
+                                    <span>Resend Verification</span>
+                                  </>
+                                )}
                               </button>
 
                               {user.status !== 'revoked' ? (

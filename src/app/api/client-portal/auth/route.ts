@@ -6,6 +6,7 @@ import {
   getRegistry,
   hashPortalPassword,
   hasRegisteredCredentialHash,
+  isEmailMarkedUnverified,
   registerClient,
   registerCredentialHash,
   registerPortalUser,
@@ -18,7 +19,14 @@ import {
 async function authenticateWithFirebase(
   email: string,
   pass: string
-): Promise<{ success: boolean; error?: string; canResetPassword?: boolean }> {
+): Promise<{
+  success: boolean;
+  error?: string;
+  canResetPassword?: boolean;
+  requiresVerification?: boolean;
+  canResendVerification?: boolean;
+  idToken?: string;
+}> {
   const normalizedEmail = email.trim().toLowerCase();
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 
@@ -36,7 +44,34 @@ async function authenticateWithFirebase(
 
       const signInData = await signInRes.json();
       if (signInRes.ok && signInData.idToken) {
-        return { success: true };
+        // Inspect email verification status
+        try {
+          const lookupRes = await fetch(
+            `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ idToken: signInData.idToken }),
+            }
+          );
+          const lookupData = await lookupRes.json();
+          const userObj = lookupData.users?.[0];
+
+          if (userObj && userObj.emailVerified === false) {
+            return {
+              success: false,
+              requiresVerification: true,
+              canResendVerification: true,
+              idToken: signInData.idToken,
+              error:
+                'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
+            };
+          }
+        } catch (lookupErr) {
+          console.warn('accounts:lookup emailVerified check notice:', lookupErr);
+        }
+
+        return { success: true, idToken: signInData.idToken };
       }
 
       const errorMsg = signInData.error?.message || '';
@@ -72,10 +107,30 @@ async function authenticateWithFirebase(
         canResetPassword: true,
       };
     }
+
+    if (isEmailMarkedUnverified(normalizedEmail)) {
+      return {
+        success: false,
+        requiresVerification: true,
+        canResendVerification: true,
+        error:
+          'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
+      };
+    }
+
     return { success: true };
   }
 
   if (!apiKey) {
+    if (isEmailMarkedUnverified(normalizedEmail)) {
+      return {
+        success: false,
+        requiresVerification: true,
+        canResendVerification: true,
+        error:
+          'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
+      };
+    }
     // If no Firebase API key in environment and no hash registered, allow default
     return { success: true };
   }
@@ -393,6 +448,19 @@ export async function POST(req: NextRequest) {
     // 2. Authenticate credentials via Firebase Auth
     const authResult = await authenticateWithFirebase(normalizedEmail, password);
     if (!authResult.success) {
+      if (authResult.requiresVerification) {
+        return NextResponse.json(
+          {
+            success: false,
+            requiresVerification: true,
+            canResendVerification: true,
+            error: authResult.error || 'Email verification is required before accessing your portal.',
+            email: normalizedEmail,
+          },
+          { status: 403 }
+        );
+      }
+
       return NextResponse.json(
         {
           success: false,
