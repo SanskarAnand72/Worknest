@@ -4,8 +4,12 @@ import {
   checkClientOrganizationAuthorization,
   ensureRegistryInitialized,
   getRegistry,
+  hashPortalPassword,
+  hasRegisteredCredentialHash,
   registerClient,
+  registerCredentialHash,
   registerPortalUser,
+  verifyCredentialHash,
 } from '@/lib/invitationRegistry';
 
 /**
@@ -15,47 +19,72 @@ async function authenticateWithFirebase(
   email: string,
   pass: string
 ): Promise<{ success: boolean; error?: string; canResetPassword?: boolean }> {
+  const normalizedEmail = email.trim().toLowerCase();
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
-  if (!apiKey) {
-    // If no Firebase API key in environment, allow valid credentials check
-    return { success: true };
+
+  if (apiKey) {
+    try {
+      // Attempt Sign-In
+      const signInRes = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: normalizedEmail, password: pass, returnSecureToken: true }),
+        }
+      );
+
+      const signInData = await signInRes.json();
+      if (signInRes.ok && signInData.idToken) {
+        return { success: true };
+      }
+
+      const errorMsg = signInData.error?.message || '';
+
+      if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+        return {
+          success: false,
+          error: 'Too many unsuccessful attempts. Access temporarily disabled. Please try again later.',
+          canResetPassword: true,
+        };
+      }
+
+      if (errorMsg === 'INVALID_PASSWORD' || errorMsg === 'INVALID_LOGIN_CREDENTIALS') {
+        return {
+          success: false,
+          error: 'Incorrect password for this account.',
+          canResetPassword: true,
+        };
+      }
+    } catch (err) {
+      console.warn('Firebase Auth REST check fallback notice:', err);
+    }
   }
 
-  try {
-    // Attempt Sign-In
-    const signInRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: pass, returnSecureToken: true }),
-      }
-    );
-
-    const signInData = await signInRes.json();
-    if (signInRes.ok && signInData.idToken) {
-      return { success: true };
-    }
-
-    const errorMsg = signInData.error?.message || '';
-
-    if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+  // Fallback verification against registered credential hash (for offline/test environments)
+  if (hasRegisteredCredentialHash(normalizedEmail)) {
+    const inputHash = hashPortalPassword(pass);
+    const matches = verifyCredentialHash(normalizedEmail, inputHash);
+    if (!matches) {
       return {
         success: false,
-        error: 'Too many unsuccessful attempts. Access temporarily disabled. Please try again later.',
+        error: 'Incorrect password for this account.',
         canResetPassword: true,
       };
     }
-
-    return {
-      success: false,
-      error: 'Incorrect password for this account.',
-      canResetPassword: true,
-    };
-  } catch (err) {
-    console.warn('Firebase Auth REST check fallback notice:', err);
     return { success: true };
   }
+
+  if (!apiKey) {
+    // If no Firebase API key in environment and no hash registered, allow default
+    return { success: true };
+  }
+
+  return {
+    success: false,
+    error: 'Incorrect password for this account.',
+    canResetPassword: true,
+  };
 }
 
 /**
@@ -170,6 +199,7 @@ export async function POST(req: NextRequest) {
         lastLoginAt: Date.now(),
       };
       registerPortalUser(updatedUser);
+      registerCredentialHash(normalizedEmail, hashPortalPassword(password));
 
       if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
         client.portalAccessStatus = 'Active';
@@ -290,6 +320,7 @@ export async function POST(req: NextRequest) {
         lastLoginAt: Date.now(),
       };
       registerPortalUser(updatedUser);
+      registerCredentialHash(resetEmail, hashPortalPassword(newPassword));
 
       if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
         client.portalAccessStatus = 'Active';

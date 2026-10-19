@@ -38,7 +38,7 @@ function ClientPortalLoginForm() {
 
   const { init: initWorkspace } = useWorkspaceStore();
 
-  const [authMode, setAuthMode] = useState<'setup' | 'signin'>('setup');
+  const [authMode, setAuthMode] = useState<'setup' | 'signin'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);

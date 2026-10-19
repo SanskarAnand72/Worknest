@@ -1194,6 +1194,282 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(validLoginData.user.email).toBe(gammaEmail);
     expect(validLoginData.client.operationalMetrics.internalNotes).toBeUndefined();
   });
+
+  it('17. Streamlined manual login flow: Admin sets email & password -> Save / Create Access -> Client logs in directly -> Multi-tenant isolation verified', async () => {
+    const store = useRevRecoveryStore.getState();
+
+    // 1. Create Client A (Stripe Enterprise)
+    const companyA = await store.addCompany({
+      name: 'Stripe Enterprise Global',
+      industry: 'Financial Infrastructure',
+      country: 'United States',
+    });
+
+    const emailA = 'billing.lead@stripe-test.io';
+    const passA = 'StripePass2026!';
+    const clientA = await store.addClient({
+      companyId: companyA.id,
+      contactEmail: emailA,
+      portalAccessStatus: 'Not Invited',
+      monthlyValue: 15000,
+      contractStatus: 'Active',
+      operationalMetrics: {
+        id: 'metrics-stripe',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 1000,
+        contactsReached: 850,
+        totalReplies: 140,
+        positiveReplies: 70,
+        qualifiedProspects: 50,
+        meetingsBooked: 30,
+        meetingsCompleted: 28,
+        dealsClosed: 8,
+        revenueGenerated: 200000,
+        internalNotes: 'STRIPE CONFIDENTIAL MARGIN NOTES - STRICTLY HIDDEN',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    // 2. Create Client B (Datadog Observability)
+    const companyB = await store.addCompany({
+      name: 'Datadog Observability Cloud',
+      industry: 'Cloud Monitoring',
+      country: 'United States',
+    });
+
+    const emailB = 'devops.director@datadog-test.com';
+    const passB = 'DataDogPass2026!';
+    const clientB = await store.addClient({
+      companyId: companyB.id,
+      contactEmail: emailB,
+      portalAccessStatus: 'Not Invited',
+      monthlyValue: 18000,
+      contractStatus: 'Active',
+      operationalMetrics: {
+        id: 'metrics-datadog',
+        clientId: '',
+        reportingPeriod: 'October 2026',
+        campaignStatus: 'Active',
+        targetAccounts: 1200,
+        contactsReached: 990,
+        totalReplies: 180,
+        positiveReplies: 90,
+        qualifiedProspects: 65,
+        meetingsBooked: 40,
+        meetingsCompleted: 35,
+        dealsClosed: 12,
+        revenueGenerated: 320000,
+        internalNotes: 'DATADOG CONFIDENTIAL REVENUE MODEL - STRICTLY HIDDEN',
+        updatedBy: 'Sanskar Anand',
+        updatedAt: Date.now(),
+        createdAt: Date.now(),
+      },
+    });
+
+    const { registerCompany, registerClient } = await import('../src/lib/invitationRegistry');
+    registerCompany(companyA);
+    registerClient(clientA, companyA);
+    registerCompany(companyB);
+    registerClient(clientB, companyB);
+
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+
+    // 3. Admin sets Client A email & password -> Save / Create Access
+    const createReqA = new Request('http://localhost:3000/api/client-portal/create-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: clientA.id,
+        email: emailA,
+        password: passA,
+        name: 'Jordan Stripe Lead',
+        role: 'client_admin',
+      }),
+    });
+    const createResA = await createAccessHandler(createReqA as any);
+    expect(createResA.status).toBe(200);
+    const createDataA = await createResA.json();
+    expect(createDataA.success).toBe(true);
+    expect(createDataA.user.email).toBe(emailA);
+    expect(createDataA.user.status).toBe('active');
+    expect(createDataA.client.portalAccessStatus).toBe('Active');
+    expect(createDataA.portalUrl).toContain(encodeURIComponent(emailA));
+    expect(createDataA.portalUrl).toContain(encodeURIComponent(clientA.id));
+
+    // 4. Admin sets Client B email & password -> Save / Create Access independently
+    const createReqB = new Request('http://localhost:3000/api/client-portal/create-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: clientB.id,
+        email: emailB,
+        password: passB,
+        name: 'Alex Datadog Lead',
+        role: 'client_admin',
+      }),
+    });
+    const createResB = await createAccessHandler(createReqB as any);
+    expect(createResB.status).toBe(200);
+    const createDataB = await createResB.json();
+    expect(createDataB.success).toBe(true);
+    expect(createDataB.user.email).toBe(emailB);
+    expect(createDataB.user.status).toBe('active');
+    expect(createDataB.client.portalAccessStatus).toBe('Active');
+
+    // 5. Duplicate/Cross-tenant check: Attempting to assign Client A's email to Client B is rejected
+    const conflictReq = new Request('http://localhost:3000/api/client-portal/create-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: clientB.id,
+        email: emailA, // Attempting to use Client A's email on Client B
+        password: 'AnotherPassword123!',
+      }),
+    });
+    const conflictRes = await createAccessHandler(conflictReq as any);
+    expect(conflictRes.status).toBe(400);
+    const conflictData = await conflictRes.json();
+    expect(conflictData.success).toBe(false);
+    expect(conflictData.error).toContain('already linked');
+
+    // 6. Client A logs in with their credentials -> receives Client A dashboard data
+    const loginReqA = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: passA,
+        clientId: clientA.id,
+      }),
+    });
+    const loginResA = await authHandler(loginReqA as any);
+    expect(loginResA.status).toBe(200);
+    const loginDataA = await loginResA.json();
+    expect(loginDataA.success).toBe(true);
+    expect(loginDataA.client.id).toBe(clientA.id);
+    expect(loginDataA.company.name).toBe('Stripe Enterprise Global');
+    expect(loginDataA.client.operationalMetrics.meetingsBooked).toBe(30);
+    expect(loginDataA.client.operationalMetrics.internalNotes).toBeUndefined(); // scrubbed!
+
+    // 7. Client B logs in with their credentials -> receives Client B dashboard data
+    const loginReqB = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailB,
+        password: passB,
+        clientId: clientB.id,
+      }),
+    });
+    const loginResB = await authHandler(loginReqB as any);
+    expect(loginResB.status).toBe(200);
+    const loginDataB = await loginResB.json();
+    expect(loginDataB.success).toBe(true);
+    expect(loginDataB.client.id).toBe(clientB.id);
+    expect(loginDataB.company.name).toBe('Datadog Observability Cloud');
+    expect(loginDataB.client.operationalMetrics.meetingsBooked).toBe(40);
+    expect(loginDataB.client.operationalMetrics.internalNotes).toBeUndefined(); // scrubbed!
+
+    // 8. Multi-tenant security: Client A cannot access Client B's organization
+    const crossLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: passA,
+        clientId: clientB.id, // cross-client ID
+      }),
+    });
+    const crossLoginRes = await authHandler(crossLoginReq as any);
+    expect(crossLoginRes.status).toBe(403);
+    const crossLoginData = await crossLoginRes.json();
+    expect(crossLoginData.success).toBe(false);
+    expect(crossLoginData.error).toContain('not authorized');
+
+    // 9. Incorrect password submission returns 401 with 'Incorrect password for this account.'
+    const badPassReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: 'DefinitelyWrongPassword123!',
+        clientId: clientA.id,
+      }),
+    });
+    const badPassRes = await authHandler(badPassReq as any);
+    expect(badPassRes.status).toBe(401);
+    const badPassData = await badPassRes.json();
+    expect(badPassData.error).toBe('Incorrect password for this account.');
+
+    // 10. Admin can change client password
+    const newPassA = 'StripeNewPassword!999';
+    const updatePassReq = new Request('http://localhost:3000/api/client-portal/create-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: clientA.id,
+        email: emailA,
+        password: newPassA,
+        currentPassword: passA,
+      }),
+    });
+    const updatePassRes = await createAccessHandler(updatePassReq as any);
+    expect(updatePassRes.status).toBe(200);
+
+    // Old password no longer works
+    const oldLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: passA,
+        clientId: clientA.id,
+      }),
+    });
+    const oldLoginRes = await authHandler(oldLoginReq as any);
+    expect(oldLoginRes.status).toBe(401);
+
+    // New password works
+    const newLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: newPassA,
+        clientId: clientA.id,
+      }),
+    });
+    const newLoginRes = await authHandler(newLoginReq as any);
+    expect(newLoginRes.status).toBe(200);
+
+    // 11. Admin can revoke access
+    const { getRegistry, registerPortalUser } = await import('../src/lib/invitationRegistry');
+    const reg = getRegistry();
+    const existingUser = reg.portalUsers.get(emailA);
+    expect(existingUser).toBeDefined();
+    if (existingUser) {
+      registerPortalUser({ ...existingUser, status: 'revoked' });
+    }
+
+    const revokedLoginReq = new Request('http://localhost:3000/api/client-portal/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: emailA,
+        password: newPassA,
+        clientId: clientA.id,
+      }),
+    });
+    const revokedLoginRes = await authHandler(revokedLoginReq as any);
+    expect(revokedLoginRes.status).toBe(403);
+    const revokedLoginData = await revokedLoginRes.json();
+    expect(revokedLoginData.error).toContain('Access Revoked');
+  });
 });
 
 

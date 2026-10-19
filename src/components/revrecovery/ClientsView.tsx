@@ -39,6 +39,8 @@ import {
   Layers,
   Sparkles,
   Info,
+  Key,
+  EyeOff,
 } from 'lucide-react';
 import {
   Client,
@@ -86,6 +88,7 @@ export const ClientsView: React.FC = () => {
     resendClientPortalInvitation,
     revokeClientPortalUser,
     deleteClientPortalUser,
+    updateClientPortalUserRole,
     updateClientPortalSettings,
     setPortalClientId,
     setIsClientPortalMode,
@@ -132,6 +135,15 @@ export const ClientsView: React.FC = () => {
   const [portalInviteEmail, setPortalInviteEmail] = useState('');
   const [portalInviteName, setPortalInviteName] = useState('');
   const [portalInviteRole, setPortalInviteRole] = useState<ClientRole>('client_admin');
+  const [portalPassword, setPortalPassword] = useState('');
+  const [showPortalPassword, setShowPortalPassword] = useState(false);
+  const [isSavingAccess, setIsSavingAccess] = useState(false);
+  const [lastCreatedCredentials, setLastCreatedCredentials] = useState<{
+    email: string;
+    password?: string;
+    portalUrl: string;
+  } | null>(null);
+  const [copiedCredentials, setCopiedCredentials] = useState(false);
   const [portalActionError, setPortalActionError] = useState<string | null>(null);
   const [portalActionSuccess, setPortalActionSuccess] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -284,57 +296,111 @@ export const ClientsView: React.FC = () => {
     }
   };
 
-  // Invite client portal user
-  const handleInviteClientUser = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Generate a strong random password helper
+  const handleGeneratePassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%&*';
+    let pass = '';
+    for (let i = 0; i < 9; i++) {
+      pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setPortalPassword(`${pass}8!`);
+    setShowPortalPassword(true);
+  };
+
+  // Save / Create Client Portal Access
+  const handleSaveClientAccess = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!activeClient) return;
-    if (!portalInviteEmail.trim() || !portalInviteEmail.includes('@')) {
-      setPortalActionError('Please enter a valid email address to invite.');
+
+    const emailTrimmed = portalInviteEmail.trim().toLowerCase();
+    if (!emailTrimmed || !emailTrimmed.includes('@')) {
+      setPortalActionError('Please enter a valid business email address.');
       return;
     }
 
+    if (!portalPassword || portalPassword.length < 6) {
+      setPortalActionError('Password must be at least 6 characters.');
+      return;
+    }
+
+    setIsSavingAccess(true);
     setPortalActionError(null);
     setPortalActionSuccess(null);
 
     try {
-      const result = await inviteClientPortalUser(activeClient.id, {
-        email: portalInviteEmail.trim().toLowerCase(),
-        name: portalInviteName.trim() || activeCompany?.name || 'Client',
-        role: portalInviteRole,
+      // 1. Call server API to create/update Firebase Auth and link to client
+      const res = await fetch('/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: activeClient.id,
+          email: emailTrimmed,
+          password: portalPassword,
+          name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
+          role: portalInviteRole,
+        }),
       });
 
-      // Synchronize invitation to cloud API for multi-device access
-      try {
-        await fetch('/api/client-portal/invitation', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client: activeClient,
-            company: activeCompany,
-            user: result.user,
-          }),
-        });
-
-        // Dispatch initial Firebase Auth password setup email
-        fetch('/api/client-portal/reset-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: result.user.email,
-            clientId: activeClient.id,
-          }),
-        }).catch(() => {});
-      } catch (syncErr) {
-        console.warn('Cloud sync notification:', syncErr);
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to create client portal access.');
       }
 
-      setPortalActionSuccess(
-        `Portal invitation link created for ${result.user.email}. Setup link dispatched to client's email.`
+      // 2. Update local store state
+      await updateClient(activeClient.id, {
+        contactEmail: emailTrimmed,
+        portalAccessStatus: 'Active',
+      });
+
+      const existingUser = clientPortalUsers.find(
+        (u) => u.email.toLowerCase() === emailTrimmed
       );
-      setPortalInviteEmail(result.user.email);
+      if (existingUser) {
+        await updateClientPortalUserRole(existingUser.id, portalInviteRole);
+      } else {
+        await inviteClientPortalUser(activeClient.id, {
+          email: emailTrimmed,
+          name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
+          role: portalInviteRole,
+        });
+      }
+
+      const origin =
+        typeof window !== 'undefined' ? window.location.origin : 'https://worknest-seven-rosy.vercel.app';
+      const portalUrl =
+        data.portalUrl ||
+        `${origin}/client-portal/login?email=${encodeURIComponent(emailTrimmed)}&clientId=${encodeURIComponent(activeClient.id)}`;
+
+      setLastCreatedCredentials({
+        email: emailTrimmed,
+        password: portalPassword,
+        portalUrl,
+      });
+
+      setPortalActionSuccess(
+        `Portal access created for ${emailTrimmed}! Credentials are active and ready to share.`
+      );
     } catch (err: unknown) {
-      setPortalActionError(err instanceof Error ? err.message : 'Failed to invite client user.');
+      setPortalActionError(err instanceof Error ? err.message : 'Failed to save client access.');
+    } finally {
+      setIsSavingAccess(false);
     }
+  };
+
+  // Copy full credentials message
+  const handleCopyCredentialsMessage = () => {
+    if (!lastCreatedCredentials) return;
+    const msg = `RevRecovery Client Portal Credentials:
+
+Portal URL: ${lastCreatedCredentials.portalUrl}
+Authorized Email: ${lastCreatedCredentials.email}
+Password: ${lastCreatedCredentials.password}
+
+Log in directly with these credentials to view your performance dashboard.`;
+
+    navigator.clipboard.writeText(msg);
+    setCopiedCredentials(true);
+    setTimeout(() => setCopiedCredentials(false), 2500);
   };
 
   // Copy portal login link
@@ -1707,15 +1773,20 @@ RevRecovery Growth Team`;
                     </div>
                   </div>
 
-                  {/* Section 2: Invite Client / Grant Access Form */}
+                  {/* Section 2: Set Up Client Portal Access (Email & Password) */}
                   <div className="p-4 rounded-xl border border-border bg-card space-y-4">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
-                      <UserPlus className="w-3.5 h-3.5 text-primary" />
-                      <span>Grant Portal Access to Client Representative</span>
-                    </h4>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+                        <Key className="w-3.5 h-3.5 text-sky-500" />
+                        <span>Set Up Client Portal Access</span>
+                      </h4>
+                      <span className="text-[11px] text-muted-foreground">
+                        Manual credentials flow — client logs in directly
+                      </span>
+                    </div>
 
-                    <form onSubmit={handleInviteClientUser} className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
-                      <div>
+                    <form onSubmit={handleSaveClientAccess} className="grid grid-cols-1 sm:grid-cols-12 gap-3 text-xs">
+                      <div className="sm:col-span-3">
                         <label className="block text-muted-foreground font-medium mb-1">Representative Name</label>
                         <input
                           type="text"
@@ -1726,40 +1797,129 @@ RevRecovery Growth Team`;
                         />
                       </div>
 
-                      <div>
+                      <div className="sm:col-span-3">
                         <label className="block text-muted-foreground font-medium mb-1">Client Email *</label>
                         <input
                           type="email"
                           required
-                          placeholder="jordan@company.com"
+                          placeholder="client@company.com"
                           value={portalInviteEmail}
                           onChange={(e) => setPortalInviteEmail(e.target.value)}
                           className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary text-xs font-mono"
                         />
                       </div>
 
-                      <div>
-                        <label className="block text-muted-foreground font-medium mb-1">Portal Role</label>
-                        <select
-                          value={portalInviteRole}
-                          onChange={(e) => setPortalInviteRole(e.target.value as ClientRole)}
-                          className="w-full px-3 py-2 bg-muted/50 border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary text-xs"
-                        >
-                          <option value="client_admin">Client Admin (Full Portal Access)</option>
-                          <option value="client_guest">Client Guest (Read-Only)</option>
-                        </select>
+                      <div className="sm:col-span-4">
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-muted-foreground font-medium">Set Password *</label>
+                          <button
+                            type="button"
+                            onClick={handleGeneratePassword}
+                            className="text-[10px] text-sky-500 hover:text-sky-400 font-medium underline"
+                          >
+                            Generate
+                          </button>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="portal-password-input"
+                            type={showPortalPassword ? 'text' : 'password'}
+                            required
+                            placeholder="Min 6 characters"
+                            value={portalPassword}
+                            onChange={(e) => setPortalPassword(e.target.value)}
+                            className="w-full pl-3 pr-8 py-2 bg-muted/50 border border-border rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary text-xs font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPortalPassword(!showPortalPassword)}
+                            className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+                          >
+                            {showPortalPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="flex items-end">
+                      <div className="sm:col-span-2 flex items-end">
                         <button
                           type="submit"
-                          className="w-full px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                          disabled={isSavingAccess}
+                          className="w-full py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-1.5 shadow-xs disabled:opacity-50"
                         >
-                          <UserPlus className="w-3.5 h-3.5" />
-                          <span>Invite Client</span>
+                          {isSavingAccess ? (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              <span>Saving...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Key className="w-3.5 h-3.5" />
+                              <span>Save / Create Access</span>
+                            </>
+                          )}
                         </button>
                       </div>
                     </form>
+
+                    {/* Active Credentials Card */}
+                    {lastCreatedCredentials && (
+                      <div className="p-3.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 space-y-2.5 animate-in fade-in duration-200">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-emerald-400 font-semibold text-xs">
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <span>Access Active — Credentials Ready to Send</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyPortalLink(lastCreatedCredentials.email)}
+                              className="px-2.5 py-1 bg-card hover:bg-muted border border-border rounded-md text-[11px] font-medium text-foreground flex items-center gap-1 transition-colors"
+                            >
+                              <Copy className="w-3 h-3" />
+                              <span>Copy Link</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCopyCredentialsMessage}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors shadow-xs"
+                            >
+                              {copiedCredentials ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>Copied Credentials!</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Key className="w-3 h-3" />
+                                  <span>Copy Credentials</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] bg-card/60 p-2.5 rounded-lg border border-border">
+                          <div>
+                            <span className="text-muted-foreground block text-[10px]">Client Email:</span>
+                            <span className="font-mono font-bold text-foreground truncate block">
+                              {lastCreatedCredentials.email}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground block text-[10px]">Password:</span>
+                            <span className="font-mono font-bold text-foreground truncate block">
+                              {lastCreatedCredentials.password}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground block text-[10px]">Portal URL:</span>
+                            <span className="font-mono text-muted-foreground truncate block">
+                              {lastCreatedCredentials.portalUrl}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Section 3: Invited Client Representatives Table */}
@@ -1773,9 +1933,9 @@ RevRecovery Growth Team`;
                     {clientPortalUsersList.length === 0 ? (
                       <div className="p-8 rounded-xl border border-dashed border-border text-center text-xs text-muted-foreground space-y-2">
                         <Users className="w-8 h-8 mx-auto text-muted-foreground/40" />
-                        <p>No client representatives have been invited yet for {activeCompany.name}.</p>
+                        <p>No client representatives have been configured yet for {activeCompany.name}.</p>
                         <p className="text-[11px] text-muted-foreground/80">
-                          Invite the client's contact email above to grant secure access.
+                          Enter the client's email and password above to grant portal access.
                         </p>
                       </div>
                     ) : (
@@ -1817,93 +1977,71 @@ RevRecovery Growth Team`;
 
                             {/* User Action Buttons */}
                             <div className="flex items-center gap-2">
+                              {/* Change Password helper */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPortalInviteEmail(user.email);
+                                  setPortalInviteName(user.name);
+                                  setPortalInviteRole(user.role);
+                                  setPortalPassword('');
+                                  const pwInput = document.getElementById('portal-password-input');
+                                  pwInput?.focus();
+                                  setPortalActionSuccess(
+                                    `Ready to update password for ${user.email}. Enter a new password above and click Save / Create Access.`
+                                  );
+                                }}
+                                className="px-2.5 py-1 rounded-md border border-border bg-card hover:bg-muted text-[11px] font-medium text-foreground transition-colors flex items-center gap-1"
+                              >
+                                <Key className="w-3 h-3 text-sky-500" />
+                                <span>Change Password</span>
+                              </button>
+
+                              {/* Copy Portal Link */}
+                              <button
+                                type="button"
+                                onClick={() => handleCopyPortalLink(user.email)}
+                                className="px-2.5 py-1 rounded-md border border-border bg-card hover:bg-muted text-[11px] font-medium text-foreground transition-colors flex items-center gap-1"
+                              >
+                                <Copy className="w-3 h-3" />
+                                <span>Copy Link</span>
+                              </button>
+
                               {user.status !== 'revoked' ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      try {
-                                        await resendClientPortalInvitation(user.id);
-                                        fetch('/api/client-portal/invitation', {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({
-                                            user: { ...user, status: 'invited', invitedAt: Date.now() },
-                                            client: activeClient,
-                                            company: activeCompany,
-                                          }),
-                                        }).catch(() => {});
-                                        handleCopyPortalLink(user.email);
-                                        setPortalActionSuccess(`Invitation refreshed & login link copied for ${user.email}`);
-                                      } catch (err) {
-                                        setPortalActionError('Failed to refresh invitation.');
-                                      }
-                                    }}
-                                    className="px-2.5 py-1 rounded-md border border-border bg-card hover:bg-muted text-[11px] font-medium text-foreground transition-colors"
-                                  >
-                                    Resend Invite
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      try {
-                                        const res = await fetch('/api/client-portal/reset-password', {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({
-                                            email: user.email,
-                                            clientId: activeClient.id,
-                                          }),
-                                        });
-                                        const data = await res.json();
-                                        if (res.ok && data.success) {
-                                          setPortalActionSuccess(`Password setup link sent to ${user.email}`);
-                                        } else {
-                                          setPortalActionError(data.error || 'Failed to dispatch setup link.');
-                                        }
-                                      } catch (err) {
-                                        setPortalActionError('Failed to dispatch password setup email.');
-                                      }
-                                    }}
-                                    className="px-2.5 py-1 rounded-md border border-sky-500/20 bg-sky-500/10 hover:bg-sky-500/20 text-sky-400 text-[11px] font-medium transition-colors"
-                                  >
-                                    Send Setup Link
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      try {
-                                        await revokeClientPortalUser(user.id);
-                                        fetch('/api/client-portal/invitation', {
-                                          method: 'POST',
-                                          headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({
-                                            user: { ...user, status: 'revoked' },
-                                            client: activeClient,
-                                            company: activeCompany,
-                                          }),
-                                        }).catch(() => {});
-                                        setPortalActionSuccess(`Access revoked for ${user.email}`);
-                                      } catch (err) {
-                                        setPortalActionError('Failed to revoke access.');
-                                      }
-                                    }}
-                                    className="px-2.5 py-1 rounded-md border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-[11px] font-medium transition-colors"
-                                  >
-                                    Revoke Access
-                                  </button>
-                                </>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    try {
+                                      await revokeClientPortalUser(user.id);
+                                      fetch('/api/client-portal/invitation', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          user: { ...user, status: 'revoked' },
+                                          client: activeClient,
+                                          company: activeCompany,
+                                        }),
+                                      }).catch(() => {});
+                                      setPortalActionSuccess(`Access revoked for ${user.email}`);
+                                    } catch (err) {
+                                      setPortalActionError('Failed to revoke access.');
+                                    }
+                                  }}
+                                  className="px-2.5 py-1 rounded-md border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-[11px] font-medium transition-colors"
+                                >
+                                  Revoke Access
+                                </button>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={async () => {
                                     try {
-                                      await resendClientPortalInvitation(user.id);
+                                      await updateClientPortalUserRole(user.id, user.role);
                                       fetch('/api/client-portal/invitation', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
-                                          user: { ...user, status: 'invited', invitedAt: Date.now() },
+                                          user: { ...user, status: 'active', invitedAt: Date.now() },
                                           client: activeClient,
                                           company: activeCompany,
                                         }),

@@ -24,6 +24,7 @@ export interface InvitationRegistry {
   clients: Map<string, Client>;
   portalUsers: Map<string, ClientPortalUser>;
   aliases: Map<string, string>; // maps (clientId | companyId | slug) -> canonicalOrgKey (lowercased)
+  credentialHashes: Map<string, string>; // maps normalizedEmail -> password hash
   isInitialized: boolean;
 }
 
@@ -33,8 +34,39 @@ const globalRegistry: InvitationRegistry = {
   clients: new Map(),
   portalUsers: new Map(),
   aliases: new Map(),
+  credentialHashes: new Map(),
   isInitialized: false,
 };
+
+/**
+ * Deterministic hash helper for portal credentials verification
+ */
+export function hashPortalPassword(password: string): string {
+  let hash = 0;
+  for (let i = 0; i < password.length; i++) {
+    const char = password.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash |= 0;
+  }
+  return 'ph_' + Math.abs(hash).toString(16) + '_' + password.length;
+}
+
+export function registerCredentialHash(email: string, passwordHash: string): void {
+  const reg = ensureRegistryInitialized();
+  reg.credentialHashes.set(email.toLowerCase().trim(), passwordHash);
+}
+
+export function verifyCredentialHash(email: string, passwordHash: string): boolean {
+  const reg = ensureRegistryInitialized();
+  const stored = reg.credentialHashes.get(email.toLowerCase().trim());
+  if (!stored) return true;
+  return stored === passwordHash;
+}
+
+export function hasRegisteredCredentialHash(email: string): boolean {
+  const reg = ensureRegistryInitialized();
+  return reg.credentialHashes.has(email.toLowerCase().trim());
+}
 
 /**
  * Initializes registry with seed data and canonical aliases
@@ -231,7 +263,33 @@ export function checkClientOrganizationAuthorization(
   const normalizedEmail = email.toLowerCase().trim();
 
   // 1. Look up invitation record
-  const invitedUser = reg.portalUsers.get(normalizedEmail);
+  let invitedUser = reg.portalUsers.get(normalizedEmail);
+  if (!invitedUser) {
+    // Check if any registered client matches this email via contactEmail with Active or Revoked portal access
+    const matchingClient = Array.from(reg.clients.values()).find(
+      (c) =>
+        c.contactEmail &&
+        c.contactEmail.toLowerCase().trim() === normalizedEmail &&
+        (c.portalAccessStatus === 'Active' || c.portalAccessStatus === 'Revoked')
+    );
+    if (matchingClient) {
+      const comp = reg.companies.get(matchingClient.companyId);
+      invitedUser = {
+        id: `cpu-${matchingClient.id}-${normalizedEmail.replace(/[^a-z0-9]/g, '')}`,
+        clientId: matchingClient.id,
+        clientName: comp?.name || 'Client',
+        name: comp?.name || 'Client Representative',
+        email: normalizedEmail,
+        role: 'client_admin',
+        status: matchingClient.portalAccessStatus === 'Revoked' ? 'revoked' : 'active',
+        invitedBy: 'system',
+        invitedAt: Date.now(),
+        createdAt: Date.now(),
+      };
+      reg.portalUsers.set(normalizedEmail, invitedUser);
+    }
+  }
+
   if (!invitedUser) {
     return {
       authorized: false,
