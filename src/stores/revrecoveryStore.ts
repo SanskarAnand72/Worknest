@@ -137,6 +137,12 @@ interface RevRecoveryState {
   setPortalClientUser: (user: ClientPortalUser | null) => void;
   setIsClientPortalMode: (mode: boolean) => void;
   setPortalDateFilter: (filter: 'today' | 'week' | 'month' | 'quarter' | 'all') => void;
+  hydrateClientPortalSession: (session: {
+    clientId?: string;
+    user?: ClientPortalUser | null;
+    client?: Client | null;
+    company?: Company | null;
+  }) => void;
   inviteClientPortalUser: (clientId: string, data: { email: string; name: string; role?: ClientRole }) => Promise<{ user: ClientPortalUser; inviteLink: string }>;
   resendClientPortalInvitation: (id: string) => Promise<{ inviteLink: string }>;
   updateClientPortalUserRole: (id: string, role: ClientRole) => Promise<void>;
@@ -300,13 +306,57 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     if (get().isInitialized) return;
     try {
       const data = await fetchRevRecoveryData();
+
+      const currentClients = get().clients;
+      const mergedClients = [...data.clients];
+      for (const c of currentClients) {
+        if (!mergedClients.some((mc) => mc.id === c.id)) {
+          mergedClients.push(c);
+        }
+      }
+
+      const currentCompanies = get().companies;
+      const mergedCompanies = [...data.companies];
+      for (const comp of currentCompanies) {
+        if (!mergedCompanies.some((mc) => mc.id === comp.id)) {
+          mergedCompanies.push(comp);
+        }
+      }
+
+      // Check for active portal session in storage for mobile or new tabs
+      let sessionUser = get().portalClientUser;
+      let sessionClientId = get().portalClientId;
+      if (typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem('revrecovery_portal_session');
+          if (raw) {
+            const sess = JSON.parse(raw);
+            if (sess.client && !mergedClients.some((c) => c.id === sess.client.id)) {
+              mergedClients.push(sess.client);
+            }
+            if (sess.company && !mergedCompanies.some((c) => c.id === sess.company.id)) {
+              mergedCompanies.push(sess.company);
+            }
+            if (!sessionClientId && (sess.clientId || sess.client?.id)) {
+              sessionClientId = sess.clientId || sess.client?.id;
+            }
+            if (!sessionUser && sess.user) {
+              sessionUser = sess.user;
+            }
+          }
+        } catch (e) {}
+      }
+
       set({
         isInitialized: true,
-        companies: data.companies,
+        companies: mergedCompanies,
         contacts: data.contacts,
         leads: data.leads,
-        clients: data.clients,
+        clients: mergedClients,
         clientPortalUsers: data.clientPortalUsers || [],
+        portalClientId: sessionClientId || get().portalClientId,
+        portalClientUser: sessionUser || get().portalClientUser,
+        isClientPortalMode: Boolean(sessionClientId || get().portalClientId || get().isClientPortalMode),
         projects: data.projects,
         tasks: data.tasks,
         meetings: data.meetings,
@@ -349,6 +399,39 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     }),
   setIsClientPortalMode: (mode) => set({ isClientPortalMode: mode }),
   setPortalDateFilter: (filter) => set({ portalDateFilter: filter }),
+  hydrateClientPortalSession: (session) => {
+    const { clientId, user, client, company } = session;
+    const activeId = clientId || user?.clientId || client?.id || null;
+    set({
+      portalClientId: activeId,
+      portalClientUser: user || null,
+      isClientPortalMode: true,
+    });
+
+    if (client) {
+      const existingClients = get().clients;
+      const index = existingClients.findIndex((c) => c.id === client.id);
+      if (index >= 0) {
+        const updated = [...existingClients];
+        updated[index] = { ...updated[index], ...client };
+        set({ clients: updated });
+      } else {
+        set({ clients: [...existingClients, client] });
+      }
+    }
+
+    if (company) {
+      const existingCompanies = get().companies;
+      const index = existingCompanies.findIndex((c) => c.id === company.id);
+      if (index >= 0) {
+        const updated = [...existingCompanies];
+        updated[index] = { ...updated[index], ...company };
+        set({ companies: updated });
+      } else {
+        set({ companies: [...existingCompanies, company] });
+      }
+    }
+  },
 
   // Company Actions
   addCompany: async (data) => {
@@ -979,8 +1062,47 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   },
 
   getClientPortalData: (clientId, dateFilter = 'all') => {
-    const client = get().clients.find((c) => c.id === clientId) || null;
-    const company = client ? get().companies.find((comp) => comp.id === client.companyId) || null : null;
+    let client = get().clients.find((c) => c.id === clientId) || null;
+    let company = client ? get().companies.find((comp) => comp.id === client?.companyId) || null : null;
+
+    if ((!client || !company) && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('revrecovery_portal_session');
+        if (raw) {
+          const session = JSON.parse(raw);
+          if (session.client && (session.client.id === clientId || !client)) {
+            client = client || session.client;
+            if (!company && session.company) {
+              company = session.company;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!company && client) {
+      const activeClient = client;
+      company = {
+        id: activeClient.companyId || `comp-${activeClient.id}`,
+        name: (activeClient as any).name || (activeClient as any).clientName || 'Client Organization',
+        website: '',
+        linkedinUrl: '',
+        industry: 'B2B Services',
+        country: 'Global',
+        city: '',
+        size: '11-50',
+        type: 'Client',
+        servicesOffered: 'Outbound',
+        icpCriteria: '',
+        icpMatchStatus: 'matched',
+        researchSource: 'Portal Access',
+        verificationStatus: 'Verified',
+        assignedResearcher: 'Account Manager',
+        notes: '',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+    }
 
     const defaultSettings: ClientPortalSettings = {
       enabled: true,

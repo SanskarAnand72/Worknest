@@ -34,6 +34,7 @@ function ClientPortalLoginForm() {
     setPortalClientUser,
     setIsClientPortalMode,
     updateClient,
+    hydrateClientPortalSession,
   } = useRevRecoveryStore();
 
   const { init: initWorkspace } = useWorkspaceStore();
@@ -264,9 +265,13 @@ function ClientPortalLoginForm() {
           });
         }
 
-        setPortalClientId(data.client.id);
-        setPortalClientUser(data.user);
-        setIsClientPortalMode(true);
+        hydrateClientPortalSession({
+          clientId: data.client.id,
+          user: data.user,
+          client: data.client,
+          company: data.company,
+        });
+
         router.push('/client-portal/dashboard');
       } else {
         setErrorMessage(data.error || 'Failed to update password. The link may have expired.');
@@ -343,6 +348,13 @@ function ClientPortalLoginForm() {
           );
         }
 
+        hydrateClientPortalSession({
+          clientId: data.client.id,
+          user: data.user,
+          client: data.client,
+          company: data.company,
+        });
+
         if (data.client && clients.some((c) => c.id === data.client.id)) {
           await updateClient(data.client.id, {
             portalAccessStatus: 'Active',
@@ -350,9 +362,6 @@ function ClientPortalLoginForm() {
           });
         }
 
-        setPortalClientId(data.client.id);
-        setPortalClientUser(data.user);
-        setIsClientPortalMode(true);
         router.push('/client-portal/dashboard');
       } else if (data.requiresReset) {
         // Pre-existing account requiring verification link
@@ -447,6 +456,13 @@ function ClientPortalLoginForm() {
               })
             );
           }
+
+          hydrateClientPortalSession({
+            clientId: data.client.id,
+            user: data.user,
+            client: data.client,
+            company: data.company,
+          });
 
           if (data.client && clients.some((c) => c.id === data.client.id)) {
             await updateClient(data.client.id, {

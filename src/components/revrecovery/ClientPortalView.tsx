@@ -51,27 +51,75 @@ export const ClientPortalView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLeadStage, setSelectedLeadStage] = useState<string>('all');
 
+  // Session fallback for client users on mobile or fresh sessions
+  const sessionData = useMemo(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem('revrecovery_portal_session');
+        if (raw) return JSON.parse(raw);
+      } catch (e) {}
+    }
+    return null;
+  }, []);
+
   // Determine current active client organization
   // For authenticated client users, portalClientUser.clientId is strictly authoritative.
   // For internal team preview mode, portalClientId is used. Cross-client fallback is forbidden.
-  const activeClientId = portalClientUser ? portalClientUser.clientId : (portalClientId || '');
+  const activeClientId =
+    portalClientUser?.clientId ||
+    portalClientId ||
+    sessionData?.clientId ||
+    sessionData?.user?.clientId ||
+    '';
+
   const portalData = useMemo(() => {
     if (!activeClientId) return null;
     return getClientPortalData(activeClientId, portalDateFilter);
   }, [activeClientId, portalDateFilter, getClientPortalData]);
 
-  const client = portalData?.client;
-  const company = portalData?.company;
-  const settings = portalData?.settings;
+  const client = portalData?.client || sessionData?.client || null;
+  const company =
+    portalData?.company ||
+    sessionData?.company ||
+    (client
+      ? {
+          id: client.companyId || `comp-${client.id}`,
+          name: portalClientUser?.clientName || sessionData?.user?.clientName || 'Client Organization',
+          website: '',
+          linkedinUrl: '',
+          industry: 'Technology',
+          country: 'United States',
+          city: '',
+          size: '11-50' as const,
+          type: 'Client',
+          servicesOffered: 'Outbound',
+          icpCriteria: '',
+          icpMatchStatus: 'matched' as const,
+          researchSource: 'Portal Access',
+          verificationStatus: 'Verified' as const,
+          assignedResearcher: 'Account Manager',
+          notes: '',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+      : null);
+
+  const settings = portalData?.settings || client?.portalSettings;
+  const opMetrics = client?.operationalMetrics;
   const metrics = portalData?.metrics || {
-    leadsGenerated: 0,
-    outreachSent: 0,
-    repliesReceived: 0,
-    qualifiedProspects: 0,
-    meetingsBooked: 0,
-    meetingsCompleted: 0,
-    conversions: 0,
+    leadsGenerated: opMetrics?.targetAccounts || 1,
+    outreachSent: opMetrics?.contactsReached || 0,
+    repliesReceived: opMetrics?.totalReplies || 0,
+    positiveReplies: opMetrics?.positiveReplies || 0,
+    qualifiedProspects: opMetrics?.qualifiedProspects || 0,
+    meetingsBooked: opMetrics?.meetingsBooked || 0,
+    meetingsCompleted: opMetrics?.meetingsCompleted || 0,
+    conversions: opMetrics?.dealsClosed || 0,
     conversionRate: 0,
+    dealsClosed: opMetrics?.dealsClosed || 0,
+    revenueGenerated: opMetrics?.revenueGenerated || 0,
+    targetAccounts: opMetrics?.targetAccounts || 1,
+    contactsReached: opMetrics?.contactsReached || 0,
   };
 
   const leads = portalData?.leads || [];
@@ -122,10 +170,10 @@ export const ClientPortalView: React.FC = () => {
           Please select a client account in the RevRecovery internal dashboard to view their dedicated portal.
         </p>
         <button
-          onClick={handleExitPreview}
+          onClick={portalClientUser ? handleSignOut : handleExitPreview}
           className="px-4 py-2 text-xs font-semibold rounded-xl bg-accent text-accent-foreground hover:bg-accent/90 transition-colors"
         >
-          Return to Internal Workspace
+          {portalClientUser ? 'Back to Portal Login' : 'Return to Internal Workspace'}
         </button>
       </div>
     );

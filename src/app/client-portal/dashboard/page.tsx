@@ -19,6 +19,7 @@ export default function ClientPortalDashboardPage() {
     setPortalClientUser,
     isClientPortalMode,
     setIsClientPortalMode,
+    hydrateClientPortalSession,
   } = useRevRecoveryStore();
 
   const {
@@ -38,47 +39,39 @@ export default function ClientPortalDashboardPage() {
 
   useEffect(() => {
     if (!isVerifying && isRevInitialized) {
-      if (!portalClientId && !portalClientUser) {
-        let restored = false;
-        if (typeof window !== 'undefined') {
-          const raw = localStorage.getItem('revrecovery_portal_session');
-          if (raw) {
-            try {
-              const session = JSON.parse(raw);
-              if (session.clientId && session.user) {
-                if (session.user.status === 'revoked') {
-                  localStorage.removeItem('revrecovery_portal_session');
-                  router.push('/client-portal/login');
-                  return;
-                }
-                setPortalClientId(session.clientId);
-                setPortalClientUser(session.user);
-                setIsClientPortalMode(true);
-                restored = true;
+      let restored = false;
+      if (typeof window !== 'undefined') {
+        const raw = localStorage.getItem('revrecovery_portal_session');
+        if (raw) {
+          try {
+            const session = JSON.parse(raw);
+            if (session.clientId && session.user) {
+              if (session.user.status === 'revoked') {
+                localStorage.removeItem('revrecovery_portal_session');
+                router.push('/client-portal/login');
+                return;
               }
-            } catch (e) {
-              console.warn('Failed to parse portal session from storage:', e);
+              hydrateClientPortalSession(session);
+              restored = true;
             }
+          } catch (e) {
+            console.warn('Failed to parse portal session from storage:', e);
           }
-        }
-        if (!restored) {
-          router.push('/client-portal/login');
-        }
-      } else {
-        // If user status is revoked, clear session and redirect to login
-        if (portalClientUser?.status === 'revoked') {
-          if (typeof window !== 'undefined') {
-            localStorage.removeItem('revrecovery_portal_session');
-          }
-          setPortalClientUser(null);
-          setIsClientPortalMode(false);
-          router.push('/client-portal/login');
-        } else {
-          setIsClientPortalMode(true);
         }
       }
+
+      if (!restored && !portalClientId && !portalClientUser) {
+        router.push('/client-portal/login');
+      } else if (portalClientUser?.status === 'revoked') {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('revrecovery_portal_session');
+        }
+        setPortalClientUser(null);
+        setIsClientPortalMode(false);
+        router.push('/client-portal/login');
+      }
     }
-  }, [isVerifying, isRevInitialized, portalClientId, portalClientUser, router, setIsClientPortalMode, setPortalClientId, setPortalClientUser]);
+  }, [isVerifying, isRevInitialized, portalClientId, portalClientUser, router, hydrateClientPortalSession, setIsClientPortalMode, setPortalClientUser]);
 
   if (isVerifying || !isRevInitialized || !isWorkspaceInitialized) {
     return (

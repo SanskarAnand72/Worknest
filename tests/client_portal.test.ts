@@ -1925,6 +1925,106 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     );
     expect(wrongPassRes.status).toBe(401);
   });
+
+  it('22. Fresh browser/mobile session hydration: external client logging in on mobile without preexisting local data immediately displays dedicated portal without "No Client Organization Selected"', async () => {
+    const store = useRevRecoveryStore.getState();
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+
+    // 1. Create client organization & access via admin API
+    const company = await store.addCompany({ name: 'Mercato Global SaaS' });
+    const client = await store.addClient({
+      companyId: company.id,
+      monthlyValue: 9000,
+      contractStatus: 'Active',
+      operationalMetrics: {
+        targetAccounts: 250,
+        contactsReached: 500,
+        totalReplies: 45,
+        positiveReplies: 12,
+        qualifiedProspects: 30,
+        meetingsBooked: 15,
+        meetingsCompleted: 10,
+        dealsClosed: 3,
+        revenueGenerated: 27000,
+      },
+    });
+
+    const targetEmail = 'ops@freshmobileclient.com';
+    const targetPassword = 'MobileAccess2026!';
+    const createRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: client.id,
+          email: targetEmail,
+          password: targetPassword,
+          name: 'Mercato Admin',
+          client,
+          company,
+        }),
+      }) as any
+    );
+    expect(createRes.status).toBe(200);
+    const accessData = await createRes.json();
+    const createdClient = accessData.client;
+    const createdCompany = accessData.company;
+
+    // 2. Client authenticates via Client Portal Auth API
+    const loginRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: targetEmail,
+          password: targetPassword,
+          clientId: createdClient.id,
+          portalPasswordHash: accessData.portalPasswordHash,
+        }),
+      }) as any
+    );
+    expect(loginRes.status).toBe(200);
+    const loginData = await loginRes.json();
+    expect(loginData.success).toBe(true);
+    expect(loginData.client.id).toBe(createdClient.id);
+
+    // 3. Simulate a fresh browser or mobile device where store has NO preexisting clients
+    useRevRecoveryStore.setState({
+      clients: [],
+      companies: [],
+      portalClientId: null,
+      portalClientUser: null,
+      isClientPortalMode: false,
+    });
+
+    const freshStore = useRevRecoveryStore.getState();
+    expect(freshStore.clients.length).toBe(0);
+
+    // 4. Hydrate store from login/stored session payload
+    freshStore.hydrateClientPortalSession({
+      clientId: loginData.client.id,
+      user: loginData.user,
+      client: loginData.client,
+      company: loginData.company,
+    });
+
+    const hydratedStore = useRevRecoveryStore.getState();
+    expect(hydratedStore.portalClientId).toBe(createdClient.id);
+    expect(hydratedStore.portalClientUser?.email).toBe(targetEmail);
+    expect(hydratedStore.isClientPortalMode).toBe(true);
+    expect(hydratedStore.clients.some((c) => c.id === createdClient.id)).toBe(true);
+
+    // 5. Verify getClientPortalData returns full client & company, avoiding "No Client Organization Selected"
+    const portalData = hydratedStore.getClientPortalData(createdClient.id);
+    expect(portalData.client).toBeTruthy();
+    expect(portalData.client?.id).toBe(createdClient.id);
+    expect(portalData.company).toBeTruthy();
+    expect(portalData.company?.name).toBe('Mercato Global SaaS');
+    expect(portalData.metrics).toBeDefined();
+    expect(portalData.metrics.targetAccounts).toBeDefined();
+    expect(portalData.metrics.repliesReceived).toBeDefined();
+  });
 });
 
 
