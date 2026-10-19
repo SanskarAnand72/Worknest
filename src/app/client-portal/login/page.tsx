@@ -304,6 +304,15 @@ function ClientPortalLoginForm() {
     setInfoMessage(null);
 
     try {
+      const targetClient = clients.find(
+        (c) =>
+          (urlClientId && c.id.toLowerCase() === urlClientId.toLowerCase()) ||
+          (c.contactEmail && c.contactEmail.toLowerCase().trim() === normalizedEmail)
+      );
+      const targetCompany = targetClient
+        ? companies.find((comp) => comp.id === targetClient.companyId)
+        : undefined;
+
       const res = await fetch('/api/client-portal/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -311,7 +320,9 @@ function ClientPortalLoginForm() {
           action: 'setupPassword',
           email: normalizedEmail,
           password,
-          clientId: urlClientId,
+          clientId: urlClientId || targetClient?.id,
+          client: targetClient,
+          company: targetCompany,
         }),
       });
 
@@ -384,6 +395,19 @@ function ClientPortalLoginForm() {
       let authenticatedUser: any = null;
       let targetClientId: string | null = null;
 
+      const localClient = clients.find(
+        (c) =>
+          (urlClientId && c.id.toLowerCase() === urlClientId.toLowerCase()) ||
+          (c.contactEmail && c.contactEmail.toLowerCase().trim() === normalizedEmail) ||
+          c.portalUserIds?.some((uid) => {
+            const pu = clientPortalUsers.find((u) => u.id === uid);
+            return pu && pu.email.toLowerCase() === normalizedEmail;
+          })
+      );
+      const localCompany = localClient
+        ? companies.find((comp) => comp.id === localClient.companyId)
+        : undefined;
+
       // 1. Attempt authentication via Client Portal Auth API
       try {
         const res = await fetch('/api/client-portal/auth', {
@@ -392,7 +416,9 @@ function ClientPortalLoginForm() {
           body: JSON.stringify({
             email: normalizedEmail,
             password,
-            clientId: urlClientId,
+            clientId: urlClientId || localClient?.id,
+            client: localClient,
+            company: localCompany,
           }),
         });
 
@@ -440,9 +466,35 @@ function ClientPortalLoginForm() {
         // Fallback to local store check (e.g. offline mode or test environment)
         console.warn('API call fallback to local store:', fetchErr);
 
-        const matchedUser = clientPortalUsers.find(
+        let matchedUser = clientPortalUsers.find(
           (u) => u.email.toLowerCase() === normalizedEmail
         );
+
+        let targetClient =
+          localClient ||
+          clients.find(
+            (c) =>
+              (urlClientId && c.id.toLowerCase() === urlClientId.toLowerCase()) ||
+              (matchedUser && c.id === matchedUser.clientId) ||
+              (c.contactEmail && c.contactEmail.toLowerCase().trim() === normalizedEmail)
+          );
+
+        if (!matchedUser && targetClient) {
+          const clientRec = targetClient;
+          const comp = companies.find((co) => co.id === clientRec.companyId);
+          matchedUser = {
+            id: `cpu-${clientRec.id}-${Date.now().toString(36)}`,
+            clientId: clientRec.id,
+            clientName: comp?.name || 'Client',
+            name: comp?.name || 'Client Representative',
+            email: normalizedEmail,
+            role: 'client_admin',
+            status: 'active',
+            invitedBy: 'admin',
+            invitedAt: Date.now(),
+            createdAt: Date.now(),
+          };
+        }
 
         if (!matchedUser) {
           setErrorMessage(
@@ -452,11 +504,19 @@ function ClientPortalLoginForm() {
           return;
         }
 
+        if (
+          targetClient &&
+          targetClient.contactEmail &&
+          targetClient.contactEmail.toLowerCase().trim() === normalizedEmail
+        ) {
+          matchedUser.clientId = targetClient.id;
+        }
+
         // Multi-identifier organization match for offline fallback
         if (urlClientId && urlClientId.trim() !== '') {
           const normUrlId = urlClientId.trim().toLowerCase();
-          const targetClient = clients.find((c) => c.id === matchedUser.clientId);
-          const targetCompany = targetClient ? companies.find((comp) => comp.id === targetClient.companyId) : undefined;
+          const clientRec = targetClient;
+          const targetCompany = clientRec ? companies.find((comp) => comp.id === clientRec.companyId) : undefined;
           const targetOrgKey = (matchedUser.clientName || targetCompany?.name || '').toLowerCase().trim();
 
           const isDirectMatch = matchedUser.clientId.toLowerCase() === normUrlId;
@@ -494,7 +554,9 @@ function ClientPortalLoginForm() {
           return;
         }
 
-        const targetClient = clients.find((c) => c.id === matchedUser.clientId);
+        if (!targetClient) {
+          targetClient = clients.find((c) => c.id === matchedUser.clientId);
+        }
         if (!targetClient) {
           setErrorMessage('Client account record could not be found. Please contact support.');
           setIsLoading(false);

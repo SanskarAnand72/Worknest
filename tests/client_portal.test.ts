@@ -1736,6 +1736,163 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     const uninvitedData = await uninvitedRes.json();
     expect(uninvitedData.error).toContain('This email address has not been invited');
   });
+
+  it('21. Universal email support (Gmail and business emails) with manual access creation, direct login, and strict tenant isolation', async () => {
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: authHandler } = await import('../src/app/api/client-portal/auth/route');
+    const { registerClient, registerCompany } = await import('../src/lib/invitationRegistry');
+
+    const store = useRevRecoveryStore.getState();
+
+    // 1. Admin creates Client 1 with a personal Gmail address
+    const compGmail = await store.addCompany({
+      name: 'Gmail Client Ventures',
+      industry: 'E-commerce',
+      website: 'https://gmailventures.com',
+    });
+    const clientGmail = await store.addClient({
+      companyId: compGmail.id,
+      monthlyValue: 4500,
+      contactEmail: 'founder.client01@gmail.com',
+    });
+    registerCompany(compGmail);
+    registerClient(clientGmail, compGmail);
+
+    // 2. Admin creates Client 2 with a custom domain business email
+    const compBiz = await store.addCompany({
+      name: 'Enterprise B2B Corp',
+      industry: 'Enterprise Software',
+      website: 'https://b2bcorp.io',
+    });
+    const clientBiz = await store.addClient({
+      companyId: compBiz.id,
+      monthlyValue: 8000,
+      contactEmail: 'sarah.cro@b2bcorp.io',
+    });
+    registerCompany(compBiz);
+    registerClient(clientBiz, compBiz);
+
+    const gmailPassword = 'GmailSecurePass2026!';
+    const bizPassword = 'B2BSecurePass2026!';
+
+    // 3. Admin enters Gmail and sets password via Create Access
+    const createGmailRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: clientGmail.id,
+          email: 'founder.client01@gmail.com',
+          password: gmailPassword,
+          name: 'Jordan (Gmail Client)',
+          role: 'client_admin',
+          client: clientGmail,
+          company: compGmail,
+        }),
+      }) as any
+    );
+    expect(createGmailRes.status).toBe(200);
+    const gmailAccessData = await createGmailRes.json();
+    expect(gmailAccessData.success).toBe(true);
+    expect(gmailAccessData.portalUrl).toContain(encodeURIComponent('founder.client01@gmail.com'));
+    expect(gmailAccessData.portalUrl).toContain(clientGmail.id);
+
+    // 4. Admin enters business email and sets password via Create Access
+    const createBizRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: clientBiz.id,
+          email: 'sarah.cro@b2bcorp.io',
+          password: bizPassword,
+          name: 'Sarah (Enterprise B2B)',
+          role: 'client_admin',
+          client: clientBiz,
+          company: compBiz,
+        }),
+      }) as any
+    );
+    expect(createBizRes.status).toBe(200);
+    const bizAccessData = await createBizRes.json();
+    expect(bizAccessData.success).toBe(true);
+
+    // 5. Gmail Client logs in with provided credentials -> access granted directly
+    const gmailLoginRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'founder.client01@gmail.com',
+          password: gmailPassword,
+          clientId: clientGmail.id,
+          client: clientGmail,
+          company: compGmail,
+        }),
+      }) as any
+    );
+    expect(gmailLoginRes.status).toBe(200);
+    const gmailLoginData = await gmailLoginRes.json();
+    expect(gmailLoginData.success).toBe(true);
+    expect(gmailLoginData.user.email).toBe('founder.client01@gmail.com');
+    expect(gmailLoginData.client.id).toBe(clientGmail.id);
+    expect(gmailLoginData.company.name).toBe('Gmail Client Ventures');
+
+    // 6. Business Client logs in with provided credentials -> access granted directly
+    const bizLoginRes = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'sarah.cro@b2bcorp.io',
+          password: bizPassword,
+          clientId: clientBiz.id,
+          client: clientBiz,
+          company: compBiz,
+        }),
+      }) as any
+    );
+    expect(bizLoginRes.status).toBe(200);
+    const bizLoginData = await bizLoginRes.json();
+    expect(bizLoginData.success).toBe(true);
+    expect(bizLoginData.user.email).toBe('sarah.cro@b2bcorp.io');
+    expect(bizLoginData.client.id).toBe(clientBiz.id);
+    expect(bizLoginData.company.name).toBe('Enterprise B2B Corp');
+
+    // 7. Strict Multi-Tenant Isolation: Gmail client cannot access Enterprise B2B dashboard
+    const crossAttackRes1 = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'founder.client01@gmail.com',
+          password: gmailPassword,
+          clientId: clientBiz.id, // Trying to view Enterprise B2B portal
+        }),
+      }) as any
+    );
+    expect(crossAttackRes1.status).toBe(403);
+    const crossData1 = await crossAttackRes1.json();
+    expect(crossData1.error).toContain('Security Error: This email invitation is not authorized to access the requested client organization.');
+    expect(crossData1.diagnostic.code).toBe('CLIENT_ORG_MISMATCH');
+
+    // 8. Strict Multi-Tenant Isolation: Business client cannot access Gmail Client dashboard
+    const crossAttackRes2 = await authHandler(
+      new Request('http://localhost:3000/api/client-portal/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'sarah.cro@b2bcorp.io',
+          password: bizPassword,
+          clientId: clientGmail.id, // Trying to view Gmail Client portal
+        }),
+      }) as any
+    );
+    expect(crossAttackRes2.status).toBe(403);
+    const crossData2 = await crossAttackRes2.json();
+    expect(crossData2.error).toContain('Security Error: This email invitation is not authorized to access the requested client organization.');
+    expect(crossData2.diagnostic.code).toBe('CLIENT_ORG_MISMATCH');
+  });
 });
 
 

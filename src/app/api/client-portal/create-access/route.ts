@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   ensureRegistryInitialized,
   hashPortalPassword,
+  markEmailVerified,
   registerClient,
   registerCompany,
   registerCredentialHash,
@@ -102,7 +103,6 @@ export async function POST(req: NextRequest) {
 
     // 3. Multi-Tenant Conflict Check: Verify email is not linked to ANOTHER client organization
     const existingUser = reg.portalUsers.get(normalizedEmail);
-    // Allow rebinding if it was previously the default seed demo account or an explicit update for this client
     const isSeedUser = existingUser && existingUser.id === 'cpu-syscraft-aryan';
     const isSameEmailRebind =
       targetClient.contactEmail && targetClient.contactEmail.toLowerCase().trim() === normalizedEmail;
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Firebase Authentication Account Provisioning / Password Update & Email Verification Link Dispatch
+    // 4. Firebase Authentication Account Provisioning / Password Update
     const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
     let authMethodNote = 'Account credentials configured successfully.';
     let verificationLinkSent = false;
@@ -136,6 +136,7 @@ export async function POST(req: NextRequest) {
           body: JSON.stringify({
             email: normalizedEmail,
             password,
+            displayName: targetClient.id,
             returnSecureToken: true,
           }),
         }
@@ -145,28 +146,6 @@ export async function POST(req: NextRequest) {
 
       if (signUpRes.ok && signUpData.idToken) {
         authMethodNote = 'New Firebase Authentication account created with your specified password.';
-
-        // Dispatch real Firebase email verification link to client email inbox
-        try {
-          const verifyRes = await fetch(
-            `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                requestType: 'VERIFY_EMAIL',
-                idToken: signUpData.idToken,
-                continueUrl: 'https://notion-f316c.firebaseapp.com',
-              }),
-            }
-          );
-          if (verifyRes.ok) {
-            verificationLinkSent = true;
-            authMethodNote += ' Verification email dispatched to client inbox.';
-          }
-        } catch (vErr) {
-          console.warn('sendOobCode VERIFY_EMAIL dispatch notice:', vErr);
-        }
       } else if (signUpData.error?.message === 'EMAIL_EXISTS') {
         // Account already exists in Firebase Auth.
         // Step B: Test if the provided password matches
@@ -188,23 +167,19 @@ export async function POST(req: NextRequest) {
         if (testSignInRes.ok && testSignInData.idToken) {
           authMethodNote = 'Existing Firebase account verified with matching password.';
 
-          // Send verification link if not yet verified
+          // Update displayName to bind user to this client record
           try {
-            const vRes = await fetch(
-              `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${apiKey}`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  requestType: 'VERIFY_EMAIL',
-                  idToken: testSignInData.idToken,
-                  continueUrl: 'https://notion-f316c.firebaseapp.com',
-                }),
-              }
-            );
-            if (vRes.ok) verificationLinkSent = true;
-          } catch (vErr) {
-            console.warn('Existing user verification dispatch notice:', vErr);
+            await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:update?key=${apiKey}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                idToken: testSignInData.idToken,
+                displayName: targetClient.id,
+                returnSecureToken: true,
+              }),
+            });
+          } catch (updateErr) {
+            console.warn('accounts:update displayName notice:', updateErr);
           }
         } else {
           // Password doesn't match existing password.
@@ -235,6 +210,7 @@ export async function POST(req: NextRequest) {
                   body: JSON.stringify({
                     idToken: currentSignInData.idToken,
                     password,
+                    displayName: targetClient.id,
                     returnSecureToken: true,
                   }),
                 }
@@ -288,6 +264,7 @@ export async function POST(req: NextRequest) {
 
     registerPortalUser(portalUser);
     registerCredentialHash(normalizedEmail, hashPortalPassword(password));
+    markEmailVerified(normalizedEmail);
 
     // Update target client status
     targetClient.portalAccessStatus = 'Active';

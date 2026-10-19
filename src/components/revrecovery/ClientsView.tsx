@@ -89,6 +89,7 @@ export const ClientsView: React.FC = () => {
     revokeClientPortalUser,
     deleteClientPortalUser,
     updateClientPortalUserRole,
+    updateClientPortalUser,
     updateClientPortalSettings,
     setPortalClientId,
     setIsClientPortalMode,
@@ -349,24 +350,24 @@ export const ClientsView: React.FC = () => {
         throw new Error(data.error || 'Failed to create client portal access.');
       }
 
-      // 2. Update local store state
+      // 2. Update local store state: link representative to active client record and activate access
+      const { user: linkedUser } = await inviteClientPortalUser(activeClient.id, {
+        email: emailTrimmed,
+        name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
+        role: portalInviteRole,
+      });
+
+      await updateClientPortalUser(linkedUser.id, {
+        clientId: activeClient.id,
+        clientName: activeCompany?.name || 'Client',
+        status: 'active',
+        role: portalInviteRole,
+      });
+
       await updateClient(activeClient.id, {
         contactEmail: emailTrimmed,
         portalAccessStatus: 'Active',
       });
-
-      const existingUser = clientPortalUsers.find(
-        (u) => u.email.toLowerCase() === emailTrimmed
-      );
-      if (existingUser) {
-        await updateClientPortalUserRole(existingUser.id, portalInviteRole);
-      } else {
-        await inviteClientPortalUser(activeClient.id, {
-          email: emailTrimmed,
-          name: portalInviteName.trim() || activeCompany?.name || 'Client Representative',
-          role: portalInviteRole,
-        });
-      }
 
       const origin =
         typeof window !== 'undefined' ? window.location.origin : 'https://worknest-seven-rosy.vercel.app';

@@ -140,6 +140,7 @@ interface RevRecoveryState {
   inviteClientPortalUser: (clientId: string, data: { email: string; name: string; role?: ClientRole }) => Promise<{ user: ClientPortalUser; inviteLink: string }>;
   resendClientPortalInvitation: (id: string) => Promise<{ inviteLink: string }>;
   updateClientPortalUserRole: (id: string, role: ClientRole) => Promise<void>;
+  updateClientPortalUser: (id: string, updates: Partial<ClientPortalUser>) => Promise<void>;
   revokeClientPortalUser: (id: string) => Promise<void>;
   deleteClientPortalUser: (id: string) => Promise<void>;
   updateClientPortalSettings: (clientId: string, settings: Partial<ClientPortalSettings>) => Promise<void>;
@@ -904,6 +905,15 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
   updateClientPortalUserRole: async (id, role) => {
     const updated = get().clientPortalUsers.map((u) =>
       u.id === id ? { ...u, role } : u
+    );
+    set({ clientPortalUsers: updated });
+    const target = updated.find((u) => u.id === id);
+    if (target) await saveEntityToRevDB('clientPortalUsers', target);
+  },
+
+  updateClientPortalUser: async (id, updates) => {
+    const updated = get().clientPortalUsers.map((u) =>
+      u.id === id ? { ...u, ...updates } : u
     );
     set({ clientPortalUsers: updated });
     const target = updated.find((u) => u.id === id);

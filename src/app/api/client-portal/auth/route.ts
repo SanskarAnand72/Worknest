@@ -26,6 +26,7 @@ async function authenticateWithFirebase(
   requiresVerification?: boolean;
   canResendVerification?: boolean;
   idToken?: string;
+  displayName?: string;
 }> {
   const normalizedEmail = email.trim().toLowerCase();
   const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
@@ -44,7 +45,7 @@ async function authenticateWithFirebase(
 
       const signInData = await signInRes.json();
       if (signInRes.ok && signInData.idToken) {
-        // Inspect email verification status
+        let resolvedDisplayName = signInData.displayName;
         try {
           const lookupRes = await fetch(
             `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`,
@@ -56,22 +57,14 @@ async function authenticateWithFirebase(
           );
           const lookupData = await lookupRes.json();
           const userObj = lookupData.users?.[0];
-
-          if (userObj && userObj.emailVerified === false) {
-            return {
-              success: false,
-              requiresVerification: true,
-              canResendVerification: true,
-              idToken: signInData.idToken,
-              error:
-                'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
-            };
+          if (userObj?.displayName) {
+            resolvedDisplayName = userObj.displayName;
           }
         } catch (lookupErr) {
-          console.warn('accounts:lookup emailVerified check notice:', lookupErr);
+          console.warn('accounts:lookup displayName check notice:', lookupErr);
         }
 
-        return { success: true, idToken: signInData.idToken };
+        return { success: true, idToken: signInData.idToken, displayName: resolvedDisplayName };
       }
 
       const errorMsg = signInData.error?.message || '';
@@ -96,6 +89,16 @@ async function authenticateWithFirebase(
     }
   }
 
+  if (isEmailMarkedUnverified(normalizedEmail)) {
+    return {
+      success: false,
+      requiresVerification: true,
+      canResendVerification: true,
+      error:
+        'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
+    };
+  }
+
   // Fallback verification against registered credential hash (for offline/test environments)
   if (hasRegisteredCredentialHash(normalizedEmail)) {
     const inputHash = hashPortalPassword(pass);
@@ -108,30 +111,10 @@ async function authenticateWithFirebase(
       };
     }
 
-    if (isEmailMarkedUnverified(normalizedEmail)) {
-      return {
-        success: false,
-        requiresVerification: true,
-        canResendVerification: true,
-        error:
-          'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
-      };
-    }
-
     return { success: true };
   }
 
   if (!apiKey) {
-    if (isEmailMarkedUnverified(normalizedEmail)) {
-      return {
-        success: false,
-        requiresVerification: true,
-        canResendVerification: true,
-        error:
-          'Email verification is required before accessing your portal. A verification link has been sent to your email. Please check your inbox (and spam folder) or click Resend Verification below.',
-      };
-    }
-    // If no Firebase API key in environment and no hash registered, allow default
     return { success: true };
   }
 
@@ -151,7 +134,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { action, oobCode, newPassword, email, password, clientId } = body;
+    const {
+      action,
+      oobCode,
+      newPassword,
+      email,
+      password,
+      clientId,
+      client: clientPayload,
+      company: companyPayload,
+    } = body;
 
     // Handle First-Time Password Setup for Invited Representatives
     if (action === 'setupPassword') {
@@ -172,7 +164,12 @@ export async function POST(req: NextRequest) {
       const normalizedEmail = email.trim().toLowerCase();
 
       // Verify representative authorization for requested organization
-      const authCheck = checkClientOrganizationAuthorization(normalizedEmail, clientId);
+      const authCheck = checkClientOrganizationAuthorization(
+        normalizedEmail,
+        clientId,
+        clientPayload,
+        companyPayload
+      );
       if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
         return NextResponse.json(
           {
@@ -356,7 +353,12 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const authCheck = checkClientOrganizationAuthorization(resetEmail, clientId);
+      const authCheck = checkClientOrganizationAuthorization(
+        resetEmail,
+        clientId,
+        clientPayload,
+        companyPayload
+      );
       if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
         return NextResponse.json(
           {
@@ -431,7 +433,12 @@ export async function POST(req: NextRequest) {
     const normalizedEmail = email.trim().toLowerCase();
 
     // 1. Perform strict organization binding and invitation check
-    const authCheck = checkClientOrganizationAuthorization(normalizedEmail, clientId);
+    const authCheck = checkClientOrganizationAuthorization(
+      normalizedEmail,
+      clientId,
+      clientPayload,
+      companyPayload
+    );
     if (!authCheck.authorized || !authCheck.user || !authCheck.client) {
       return NextResponse.json(
         {
@@ -464,8 +471,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           success: false,
-          error: authResult.error || 'Authentication failed.',
-          canResetPassword: authResult.canResetPassword ?? false,
+          error: authResult.error || 'Incorrect password for this account.',
+          canResetPassword: authResult.canResetPassword ?? true,
           email: normalizedEmail,
         },
         { status: 401 }

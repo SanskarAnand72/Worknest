@@ -141,7 +141,7 @@ export const SEED_CLIENT_PORTAL_USERS: ClientPortalUser[] = [
   {
     id: 'cpu-syscraft-aryan',
     email: 'aryansans03@gmail.com',
-    name: 'syscraft',
+    name: 'Aryan Anand',
     clientId: 'client-syscraft',
     clientName: 'syscraft',
     role: 'client_admin',

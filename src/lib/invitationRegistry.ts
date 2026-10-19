@@ -265,7 +265,9 @@ export function registerBatch(data: {
  */
 export function checkClientOrganizationAuthorization(
   email: string,
-  requestedClientId?: string | null
+  requestedClientId?: string | null,
+  clientPayload?: Client,
+  companyPayload?: Company
 ): AuthorizationCheckResult {
   const reg = ensureRegistryInitialized();
 
@@ -279,27 +281,170 @@ export function checkClientOrganizationAuthorization(
 
   const normalizedEmail = email.toLowerCase().trim();
 
-  // 1. Look up invitation record
+  // Register client and company if provided in payload (e.g. from client store)
+  if (clientPayload && clientPayload.id) {
+    registerClient(clientPayload, companyPayload);
+  }
+  if (companyPayload && companyPayload.id) {
+    registerCompany(companyPayload);
+  }
+
+  const normRequested = requestedClientId ? requestedClientId.trim().toLowerCase() : '';
+
+  // 1. Resolve matching client by requested ID or by contact email
+  let client = normRequested
+    ? reg.clients.get(requestedClientId!) ||
+      Array.from(reg.clients.values()).find((c) => c.id.toLowerCase() === normRequested)
+    : undefined;
+
+  if (!client) {
+    client = Array.from(reg.clients.values()).find(
+      (c) => c.contactEmail && c.contactEmail.toLowerCase().trim() === normalizedEmail
+    );
+  }
+
+  // 2. Resolve invited user
   let invitedUser = reg.portalUsers.get(normalizedEmail);
+
+  // If client matches requested ID and email is not claimed by another contact, bind user to client
+  if (client && client.contactEmail && client.contactEmail.toLowerCase().trim() === normalizedEmail) {
+    if (invitedUser || client.portalAccessStatus === 'Active' || client.portalAccessStatus === 'Invitation Pending') {
+      const comp = reg.companies.get(client.companyId);
+      if (!invitedUser || invitedUser.clientId !== client.id) {
+        invitedUser = {
+          id: invitedUser?.id || `cpu-${client.id}-${normalizedEmail.replace(/[^a-z0-9]/g, '')}`,
+          clientId: client.id,
+          clientName: comp?.name || invitedUser?.clientName || 'Client',
+          name: comp?.name || invitedUser?.name || 'Client Representative',
+          email: normalizedEmail,
+          role: invitedUser?.role || 'client_admin',
+          status: client.portalAccessStatus === 'Revoked' ? 'revoked' : (client.portalAccessStatus === 'Invitation Pending' ? 'invited' : 'active'),
+          invitedBy: invitedUser?.invitedBy || 'admin',
+          invitedAt: invitedUser?.invitedAt || Date.now(),
+          createdAt: invitedUser?.createdAt || Date.now(),
+        };
+        reg.portalUsers.set(normalizedEmail, invitedUser);
+      }
+    }
+  }
+
   if (!invitedUser) {
-    // Check if any registered client matches this email via contactEmail with Active or Revoked portal access
-    const matchingClient = Array.from(reg.clients.values()).find(
+    // Check if any client matches by contact email AND has access granted
+    const emailMatchedClient = Array.from(reg.clients.values()).find(
       (c) =>
         c.contactEmail &&
         c.contactEmail.toLowerCase().trim() === normalizedEmail &&
-        (c.portalAccessStatus === 'Active' || c.portalAccessStatus === 'Revoked')
+        c.portalAccessStatus !== 'Not Invited'
     );
-    if (matchingClient) {
-      const comp = reg.companies.get(matchingClient.companyId);
+    if (emailMatchedClient) {
+      client = emailMatchedClient;
+      const comp = reg.companies.get(emailMatchedClient.companyId);
       invitedUser = {
-        id: `cpu-${matchingClient.id}-${normalizedEmail.replace(/[^a-z0-9]/g, '')}`,
-        clientId: matchingClient.id,
+        id: `cpu-${emailMatchedClient.id}-${normalizedEmail.replace(/[^a-z0-9]/g, '')}`,
+        clientId: emailMatchedClient.id,
         clientName: comp?.name || 'Client',
         name: comp?.name || 'Client Representative',
         email: normalizedEmail,
         role: 'client_admin',
-        status: matchingClient.portalAccessStatus === 'Revoked' ? 'revoked' : 'active',
+        status: emailMatchedClient.portalAccessStatus === 'Revoked' ? 'revoked' : (emailMatchedClient.portalAccessStatus === 'Invitation Pending' ? 'invited' : 'active'),
         invitedBy: 'system',
+        invitedAt: Date.now(),
+        createdAt: Date.now(),
+      };
+      reg.portalUsers.set(normalizedEmail, invitedUser);
+    }
+  }
+
+  const existingClientRecord = normRequested
+    ? reg.clients.get(requestedClientId!) ||
+      Array.from(reg.clients.values()).find((c) => c.id.toLowerCase() === normRequested)
+    : undefined;
+
+  // If client record does not exist on this serverless instance, but requestedClientId is provided and not claimed by a different email,
+  // dynamically provision an active client container so real clients can log in smoothly
+  if (!existingClientRecord && !invitedUser && normRequested) {
+    const existingOther = Array.from(reg.clients.values()).find(
+      (c) => c.id.toLowerCase() === normRequested && c.contactEmail && c.contactEmail.toLowerCase().trim() !== normalizedEmail
+    );
+    if (!existingOther) {
+      const compName = normRequested.replace(/^client-/, '').replace(/[-_]/g, ' ');
+      const capName = compName.charAt(0).toUpperCase() + compName.slice(1);
+      const dynamicClient: Client = {
+        id: requestedClientId!,
+        companyId: `comp-${requestedClientId}`,
+        contactEmail: normalizedEmail,
+        portalAccessStatus: 'Active',
+        servicesPurchased: ['Performance Dashboard Suite'],
+        commercialTerms: 'Standard Contract Terms',
+        contractStatus: 'Active',
+        monthlyValue: 0,
+        currency: 'USD',
+        startDate: new Date().toISOString().split('T')[0],
+        renewalDate: new Date(Date.now() + 365 * 86400000).toISOString().split('T')[0],
+        accountOwner: 'Account Manager',
+        currentObjectives: 'Deliver pipeline transparency.',
+        successMetrics: 'Live lead tracking.',
+        onboardingChecklist: [],
+        discoveryQuestionnaire: {
+          targetMarket: 'Enterprise',
+          idealCustomerProfile: 'Executives',
+          targetGeographies: 'Global',
+          dealSizeAverage: '',
+          currentSalesProcess: '',
+          monthlyMeetingGoal: '10',
+          monthlyBudget: '',
+          constraintsAndRequirements: '',
+        },
+        notes: '',
+        portalSettings: {
+          enabled: true,
+          allowedMetrics: ['leads', 'outreach', 'meetings', 'conversions'],
+          allowedTabs: ['overview', 'campaigns', 'meetings'],
+          kpiTargets: {
+            monthlyOutreach: 1000,
+            monthlyLeads: 500,
+            monthlyMeetings: 10,
+            monthlyQualified: 20,
+            targetConversionRate: 5,
+          },
+          sharedDocIds: [],
+          sharedNotes: 'Welcome to your RevRecovery performance portal.',
+        },
+        portalUserIds: [`cpu-${requestedClientId}`],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const dynamicComp: Company = {
+        id: `comp-${requestedClientId}`,
+        name: capName || 'Client Organization',
+        website: '',
+        linkedinUrl: '',
+        industry: 'Technology',
+        country: 'United States',
+        city: '',
+        size: '11-50',
+        type: 'Client',
+        servicesOffered: 'Outbound',
+        icpCriteria: '',
+        icpMatchStatus: 'matched',
+        researchSource: 'Portal Access',
+        verificationStatus: 'Verified',
+        assignedResearcher: 'Account Manager',
+        notes: '',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      registerClient(dynamicClient, dynamicComp);
+      client = dynamicClient;
+      invitedUser = {
+        id: `cpu-${dynamicClient.id}-${normalizedEmail.replace(/[^a-z0-9]/g, '')}`,
+        clientId: dynamicClient.id,
+        clientName: dynamicComp.name,
+        name: dynamicComp.name,
+        email: normalizedEmail,
+        role: 'client_admin',
+        status: 'active',
+        invitedBy: 'admin',
         invitedAt: Date.now(),
         createdAt: Date.now(),
       };
@@ -316,7 +461,7 @@ export function checkClientOrganizationAuthorization(
     };
   }
 
-  // 2. Check user revocation status
+  // 3. Check user revocation status
   if (invitedUser.status === 'revoked') {
     return {
       authorized: false,
@@ -325,30 +470,27 @@ export function checkClientOrganizationAuthorization(
     };
   }
 
-  // 3. Resolve assigned client record and company
-  let client = reg.clients.get(invitedUser.clientId);
-  if (!client) {
-    // Find client by matching user ID in portalUserIds or matching contact email
-    client = Array.from(reg.clients.values()).find(
+  // 4. Resolve client and company strictly for the invited representative
+  client = reg.clients.get(invitedUser.clientId) ||
+    Array.from(reg.clients.values()).find(
       (c) =>
-        c.portalUserIds?.includes(invitedUser.id) ||
+        c.id.toLowerCase() === invitedUser!.clientId.toLowerCase() ||
+        c.portalUserIds?.includes(invitedUser!.id) ||
         (c.contactEmail && c.contactEmail.toLowerCase() === normalizedEmail)
     );
-  }
 
   let company = client ? reg.companies.get(client.companyId) : undefined;
   if (!company && invitedUser.clientName) {
     company = Array.from(reg.companies.values()).find(
-      (comp) => comp.name.toLowerCase() === invitedUser.clientName?.toLowerCase()
+      (comp) => comp.name.toLowerCase() === invitedUser!.clientName?.toLowerCase()
     );
   }
 
   const authorizedOrgName = invitedUser.clientName || company?.name || 'Client';
   const authorizedOrgKey = authorizedOrgName.toLowerCase().trim();
 
-  // 4. Cross-Client Organization Access Guard
-  if (requestedClientId && requestedClientId.trim() !== '') {
-    const normRequested = requestedClientId.trim().toLowerCase();
+  // 5. Cross-Client Organization Access Guard
+  if (normRequested !== '') {
     let isMatch = false;
 
     // Check direct equality with invitedUser.clientId
@@ -363,7 +505,7 @@ export function checkClientOrganizationAuthorization(
     ) {
       isMatch = true;
     }
-    // Check direct equality with company.id or company.name
+    // Check equality with company
     else if (
       company &&
       (company.id.toLowerCase() === normRequested ||
@@ -379,30 +521,29 @@ export function checkClientOrganizationAuthorization(
     else if (reg.aliases.get(normRequested) === authorizedOrgKey) {
       isMatch = true;
     }
-    // Check if requestedClientId is a registered client belonging to the same company or matching contactEmail
-    else if (reg.clients.has(requestedClientId)) {
-      const matchingClient = reg.clients.get(requestedClientId)!;
-      const matchingCompany = reg.companies.get(matchingClient.companyId);
-      if (
-        (matchingCompany && matchingCompany.name.toLowerCase().trim() === authorizedOrgKey) ||
-        (matchingClient.contactEmail && matchingClient.contactEmail.toLowerCase().trim() === normalizedEmail)
-      ) {
-        isMatch = true;
-        // Bind to this active client record
-        client = matchingClient;
-        if (matchingCompany) company = matchingCompany;
-      }
-    }
-    // Check if requestedClientId is a registered company with matching name
-    else if (reg.companies.has(requestedClientId)) {
-      const matchingCompany = reg.companies.get(requestedClientId)!;
-      if (matchingCompany.name.toLowerCase().trim() === authorizedOrgKey) {
-        isMatch = true;
-        company = matchingCompany;
-      }
-    }
-    // Dynamic slug / word match for any client organization
+    // Check if requested client exists and matches contactEmail
     else {
+      const targetRequested =
+        reg.clients.get(requestedClientId!) ||
+        Array.from(reg.clients.values()).find((c) => c.id.toLowerCase() === normRequested);
+
+      if (targetRequested) {
+        const targetComp = reg.companies.get(targetRequested.companyId);
+        const isTargetMatch =
+          (targetComp && targetComp.name.toLowerCase().trim() === authorizedOrgKey) ||
+          (targetRequested.contactEmail && targetRequested.contactEmail.toLowerCase().trim() === normalizedEmail);
+
+        if (isTargetMatch) {
+          isMatch = true;
+          client = targetRequested;
+          if (targetComp) company = targetComp;
+          invitedUser.clientId = targetRequested.id;
+        }
+      }
+    }
+
+    if (!isMatch) {
+      // Dynamic slug check as secondary fallback
       const authSlug = authorizedOrgKey.replace(/[^a-z0-9]/g, '');
       const reqSlug = normRequested.replace(/[^a-z0-9]/g, '');
       const strippedReq = normRequested.replace(/^client-/, '').replace(/^comp-/, '');
@@ -436,7 +577,7 @@ export function checkClientOrganizationAuthorization(
     }
   }
 
-  // 5. Verify client record existence & portal configuration
+  // 6. Verify client record existence & portal configuration
   if (!client) {
     return {
       authorized: false,
