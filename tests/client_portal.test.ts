@@ -2025,6 +2025,212 @@ describe('RevRecovery OS - Client Portal & Multi-Tenant Isolation Suite', () => 
     expect(portalData.metrics.targetAccounts).toBeDefined();
     expect(portalData.metrics.repliesReceived).toBeDefined();
   });
+
+  it('23. Admin dashboard updates persist to shared cloud database and client portal sync returns updated metrics on fresh session', async () => {
+    const store = useRevRecoveryStore.getState();
+    const { POST: createAccessHandler } = await import('../src/app/api/client-portal/create-access/route');
+    const { POST: syncPostHandler, GET: syncGetHandler } = await import('../src/app/api/client-portal/sync/route');
+
+    // 1. Create client organization & access
+    const company = await store.addCompany({ name: 'Quantum Cloud AI' });
+    const client = await store.addClient({
+      companyId: company.id,
+      monthlyValue: 12000,
+      contractStatus: 'Active',
+      operationalMetrics: {
+        targetAccounts: 200,
+        contactsReached: 100,
+        totalReplies: 10,
+        positiveReplies: 4,
+        qualifiedProspects: 5,
+        meetingsBooked: 2,
+        meetingsCompleted: 1,
+        dealsClosed: 0,
+        revenueGenerated: 0,
+        internalNotes: 'Internal admin notes: client high priority for Q4',
+      },
+    });
+
+    const targetEmail = 'ops@quantumcloud.ai';
+    const createRes = await createAccessHandler(
+      new Request('http://localhost:3000/api/client-portal/create-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: client.id,
+          email: targetEmail,
+          password: 'QuantumCloud2026!',
+          name: 'Quantum Ops',
+          client,
+          company,
+        }),
+      }) as any
+    );
+    expect(createRes.status).toBe(200);
+
+    // 2. Admin updates metrics from laptop internal admin panel
+    const updatedMetrics = {
+      targetAccounts: 250,
+      contactsReached: 2500,
+      totalReplies: 120,
+      positiveReplies: 45,
+      qualifiedProspects: 42,
+      meetingsBooked: 18,
+      meetingsCompleted: 15,
+      dealsClosed: 4,
+      revenueGenerated: 48000,
+      internalNotes: 'Secret internal team margin data',
+      updatedBy: 'Admin Operator',
+      updatedAt: Date.now(),
+    };
+
+    const syncPostRes = await syncPostHandler(
+      new Request('http://localhost:3000/api/client-portal/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'saveOperationalMetrics',
+          clientId: client.id,
+          client: { ...client, operationalMetrics: updatedMetrics },
+          company,
+          metrics: updatedMetrics,
+        }),
+      }) as any
+    );
+    expect(syncPostRes.status).toBe(200);
+    const syncPostData = await syncPostRes.json();
+    expect(syncPostData.success).toBe(true);
+
+    // 3. Client on another device / fresh session calls GET /api/client-portal/sync
+    const syncGetRes = await syncGetHandler(
+      new Request(
+        `http://localhost:3000/api/client-portal/sync?clientId=${encodeURIComponent(client.id)}&email=${encodeURIComponent(targetEmail)}`
+      ) as any
+    );
+    expect(syncGetRes.status).toBe(200);
+    const syncGetData = await syncGetRes.json();
+    expect(syncGetData.success).toBe(true);
+    expect(syncGetData.client).toBeDefined();
+
+    // Verify fresh cloud metrics are delivered
+    const freshMetrics = syncGetData.client.operationalMetrics;
+    expect(freshMetrics.contactsReached).toBe(2500);
+    expect(freshMetrics.targetAccounts).toBe(250);
+    expect(freshMetrics.qualifiedProspects).toBe(42);
+    expect(freshMetrics.meetingsBooked).toBe(18);
+
+    // Verify sensitive internal notes are never exposed in sync response
+    expect(freshMetrics.internalNotes).toBeUndefined();
+  });
+
+  it('24. Multi-tenant security: unauthorized client or cross-tenant user cannot fetch another client data via sync API', async () => {
+    const store = useRevRecoveryStore.getState();
+    const { registerClient, registerCompany } = await import('../src/lib/invitationRegistry');
+    const { GET: syncGetHandler } = await import('../src/app/api/client-portal/sync/route');
+
+    // 1. Missing clientId
+    const resNoClient = await syncGetHandler(
+      new Request('http://localhost:3000/api/client-portal/sync?email=test@test.com') as any
+    );
+    expect(resNoClient.status).toBe(400);
+
+    // 2. Register Client A with authorized contact email
+    const compA = await store.addCompany({ name: 'Alpha Cybersec Corp' });
+    const clientA = await store.addClient({
+      companyId: compA.id,
+      contactEmail: 'security.lead@alphacybersec.com',
+      portalAccessStatus: 'Active',
+    });
+    registerCompany(compA);
+    registerClient(clientA, compA);
+
+    // 3. Register Client B with another contact email
+    const compB = await store.addCompany({ name: 'Beta Cloud Storage' });
+    const clientB = await store.addClient({
+      companyId: compB.id,
+      contactEmail: 'admin@betacloudstorage.io',
+      portalAccessStatus: 'Active',
+    });
+    registerCompany(compB);
+    registerClient(clientB, compB);
+
+    // 4. Client B email attempts to access Client A data -> strictly denied with 403
+    const resCrossClient = await syncGetHandler(
+      new Request(
+        `http://localhost:3000/api/client-portal/sync?clientId=${clientA.id}&email=admin@betacloudstorage.io`
+      ) as any
+    );
+    expect(resCrossClient.status).toBe(403);
+
+    // 5. Unauthorized external email attempts to access Client A data -> strictly denied with 403
+    const resForbidden = await syncGetHandler(
+      new Request(
+        `http://localhost:3000/api/client-portal/sync?clientId=${clientA.id}&email=unauthorized.stranger@otherdomain.com`
+      ) as any
+    );
+    expect(resForbidden.status).toBe(403);
+  });
+
+  it('25. KPI progress and status labels: accurately calculate completion %, cap progress bar at 100%, show true percentage, and enforce verified records for delivery', async () => {
+    const { computeKpiMetric } = await import('../src/lib/clientPortalKpi');
+
+    // Case 1: 2500 / 250 = 1000% completion
+    // Bar capped at 100%, percentage shows 1000%, label is "Target achieved" (never "Delivered" without verified records)
+    const kpi1000 = computeKpiMetric(2500, 250, false);
+    expect(kpi1000.actual).toBe(2500);
+    expect(kpi1000.target).toBe(250);
+    expect(kpi1000.percent).toBe(1000);
+    expect(kpi1000.formattedPercent).toBe('1000%');
+    expect(kpi1000.barWidth).toBe(100);
+    expect(kpi1000.statusLabel).toBe('Target achieved');
+    expect(kpi1000.isDelivered).toBe(false);
+
+    // Case 2: 100 / 30 = 333.3% completion
+    const kpi333 = computeKpiMetric(100, 30, false);
+    expect(kpi333.actual).toBe(100);
+    expect(kpi333.target).toBe(30);
+    expect(kpi333.formattedPercent).toBe('333.3%');
+    expect(kpi333.barWidth).toBe(100);
+    expect(kpi333.statusLabel).toBe('Target achieved');
+
+    // Case 3: In progress: 0 / 500 = 0%
+    const kpi0 = computeKpiMetric(0, 500, false);
+    expect(kpi0.actual).toBe(0);
+    expect(kpi0.target).toBe(500);
+    expect(kpi0.percent).toBe(0);
+    expect(kpi0.formattedPercent).toBe('0%');
+    expect(kpi0.barWidth).toBe(0);
+    expect(kpi0.statusLabel).toBe('In progress');
+
+    // Case 4: Partial progress: 150 / 250 = 60%
+    const kpi60 = computeKpiMetric(150, 250, false);
+    expect(kpi60.percent).toBe(60);
+    expect(kpi60.formattedPercent).toBe('60%');
+    expect(kpi60.barWidth).toBe(60);
+    expect(kpi60.statusLabel).toBe('In progress');
+
+    // Case 5: Safe handling of zero or missing targets
+    const kpiZeroTarget = computeKpiMetric(50, 0, false);
+    expect(kpiZeroTarget.percent).toBe(0);
+    expect(kpiZeroTarget.formattedPercent).toBe('0%');
+    expect(kpiZeroTarget.barWidth).toBe(0);
+    expect(kpiZeroTarget.statusLabel).toBe('In progress');
+
+    const kpiMissingTarget = computeKpiMetric(50, undefined as any, false);
+    expect(kpiMissingTarget.percent).toBe(0);
+    expect(kpiMissingTarget.formattedPercent).toBe('0%');
+    expect(kpiMissingTarget.barWidth).toBe(0);
+
+    // Case 6: Verified delivery from stored records: 15 / 15 with verified records = "Delivered"
+    const kpiDelivered = computeKpiMetric(15, 15, true);
+    expect(kpiDelivered.actual).toBe(15);
+    expect(kpiDelivered.target).toBe(15);
+    expect(kpiDelivered.percent).toBe(100);
+    expect(kpiDelivered.formattedPercent).toBe('100%');
+    expect(kpiDelivered.barWidth).toBe(100);
+    expect(kpiDelivered.statusLabel).toBe('Delivered');
+    expect(kpiDelivered.isDelivered).toBe(true);
+  });
 });
 
 

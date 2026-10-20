@@ -20,6 +20,7 @@ import {
   Mail,
   MessageSquare,
   PhoneCall,
+  RefreshCw,
   Search,
   Share2,
   Shield,
@@ -30,6 +31,10 @@ import {
   Users,
   Zap,
 } from 'lucide-react';
+import { computeKpiMetric, KpiMetricResult } from '@/lib/clientPortalKpi';
+
+export { computeKpiMetric };
+export type { KpiMetricResult };
 
 export const ClientPortalView: React.FC = () => {
   const {
@@ -45,7 +50,11 @@ export const ClientPortalView: React.FC = () => {
     setPortalDateFilter,
     getClientPortalData,
     setActiveModule,
+    fetchClientPortalDataFromCloud,
   } = useRevRecoveryStore();
+
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<'overview' | 'campaigns' | 'meetings' | 'projects' | 'documents'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -201,17 +210,61 @@ export const ClientPortalView: React.FC = () => {
     );
   }
 
-  // Calculate KPI progress percentages
+  const handleRefreshCloudData = async () => {
+    if (!activeClientId || isSyncing) return;
+    setIsSyncing(true);
+    setSyncNotice('Syncing with Cloud Firestore...');
+    try {
+      const email = portalClientUser?.email || sessionData?.user?.email || '';
+      const result = await fetchClientPortalDataFromCloud(activeClientId, email);
+      if (result && result.success) {
+        setSyncNotice('Synced with Cloud Firestore');
+      } else {
+        setSyncNotice('Data is up to date');
+      }
+    } catch (e) {
+      setSyncNotice('Sync failed');
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncNotice(null), 3000);
+    }
+  };
+
+  // Calculate KPI progress percentages and verified status
   const kpiTargets = settings?.kpiTargets || {};
   const outreachTarget = kpiTargets.monthlyOutreach || 500;
   const leadsTarget = kpiTargets.monthlyLeads || 250;
   const meetingsTarget = kpiTargets.monthlyMeetings || 15;
   const qualifiedTarget = kpiTargets.monthlyQualified || 30;
 
-  const outreachPct = Math.min(100, Math.round((metrics.outreachSent / outreachTarget) * 100));
-  const leadsPct = Math.min(100, Math.round((metrics.leadsGenerated / leadsTarget) * 100));
-  const meetingsPct = Math.min(100, Math.round((metrics.meetingsBooked / meetingsTarget) * 100));
-  const qualifiedPct = Math.min(100, Math.round((metrics.qualifiedProspects / qualifiedTarget) * 100));
+  const isOutreachVerified = Boolean(
+    (settings as any)?.verifiedDeliveries?.outreach ||
+    (activities.filter((a) => a.type === 'message_sent' || a.type === 'connection_request_sent' || (a.title && a.title.toLowerCase().includes('outreach'))).length >= outreachTarget && outreachTarget > 0)
+  );
+
+  const verifiedLeadsCount = leads.filter((l) => (l as any).verificationStatus === 'Verified' || (l as any).verified === true).length;
+  const isLeadsVerified = Boolean(
+    (settings as any)?.verifiedDeliveries?.leads ||
+    (verifiedLeadsCount >= leadsTarget && leadsTarget > 0)
+  );
+
+  const verifiedQualifiedCount = leads.filter((l) => l.stage === 'Qualified' || l.stage === 'Meeting Booked' || l.stage === 'Meeting Completed' || l.stage === 'Won').length;
+  const isQualifiedVerified = Boolean(
+    (settings as any)?.verifiedDeliveries?.qualified ||
+    (verifiedQualifiedCount >= qualifiedTarget && qualifiedTarget > 0)
+  );
+
+  const verifiedMeetingsCount = meetings.filter((m) => m.outcome === 'Completed' || (m as any).status === 'Completed').length;
+  const isMeetingsVerified = Boolean(
+    (settings as any)?.verifiedDeliveries?.meetings ||
+    (verifiedMeetingsCount >= meetingsTarget && meetingsTarget > 0) ||
+    (metrics.meetingsCompleted >= meetingsTarget && meetingsTarget > 0)
+  );
+
+  const outreachKpi = computeKpiMetric(metrics.outreachSent, outreachTarget, isOutreachVerified);
+  const leadsKpi = computeKpiMetric(metrics.leadsGenerated, leadsTarget, isLeadsVerified);
+  const qualifiedKpi = computeKpiMetric(metrics.qualifiedProspects, qualifiedTarget, isQualifiedVerified);
+  const meetingsKpi = computeKpiMetric(metrics.meetingsBooked, meetingsTarget, isMeetingsVerified);
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-background">
@@ -280,6 +333,24 @@ export const ClientPortalView: React.FC = () => {
                 {range === 'all' ? 'All Time' : range}
               </button>
             ))}
+          </div>
+
+          {/* Cloud Sync Button */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleRefreshCloudData}
+              disabled={isSyncing}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-xl border border-border bg-card hover:bg-muted text-foreground text-xs font-medium transition-colors disabled:opacity-50"
+              title="Sync latest metrics from Cloud Firestore"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-accent' : 'text-muted-foreground'}`} />
+              <span className="hidden sm:inline">{isSyncing ? 'Syncing...' : 'Sync Cloud'}</span>
+            </button>
+            {syncNotice && (
+              <span className="text-[10px] text-accent animate-pulse font-mono hidden md:inline">
+                {syncNotice}
+              </span>
+            )}
           </div>
 
           {/* User Profile / Exit Button */}
@@ -516,16 +587,18 @@ export const ClientPortalView: React.FC = () => {
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Outreach Volume</span>
                     <span className="font-mono font-bold text-foreground">
-                      {metrics.outreachSent} / {outreachTarget}
+                      {outreachKpi.actual} / {outreachKpi.target}
                     </span>
                   </div>
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-purple-500 h-full transition-all duration-500"
-                      style={{ width: `${outreachPct}%` }}
+                      style={{ width: `${outreachKpi.barWidth}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-muted-foreground font-medium block text-right">{outreachPct}% delivered</span>
+                  <span className="text-[10px] text-muted-foreground font-medium block text-right">
+                    {outreachKpi.formattedPercent} • {outreachKpi.statusLabel}
+                  </span>
                 </div>
 
                 {/* KPI 2 */}
@@ -533,16 +606,18 @@ export const ClientPortalView: React.FC = () => {
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Researched Leads</span>
                     <span className="font-mono font-bold text-foreground">
-                      {metrics.leadsGenerated} / {leadsTarget}
+                      {leadsKpi.actual} / {leadsKpi.target}
                     </span>
                   </div>
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-blue-500 h-full transition-all duration-500"
-                      style={{ width: `${leadsPct}%` }}
+                      style={{ width: `${leadsKpi.barWidth}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-muted-foreground font-medium block text-right">{leadsPct}% delivered</span>
+                  <span className="text-[10px] text-muted-foreground font-medium block text-right">
+                    {leadsKpi.formattedPercent} • {leadsKpi.statusLabel}
+                  </span>
                 </div>
 
                 {/* KPI 3 */}
@@ -550,16 +625,18 @@ export const ClientPortalView: React.FC = () => {
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Qualified Prospects</span>
                     <span className="font-mono font-bold text-foreground">
-                      {metrics.qualifiedProspects} / {qualifiedTarget}
+                      {qualifiedKpi.actual} / {qualifiedKpi.target}
                     </span>
                   </div>
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-emerald-500 h-full transition-all duration-500"
-                      style={{ width: `${qualifiedPct}%` }}
+                      style={{ width: `${qualifiedKpi.barWidth}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-muted-foreground font-medium block text-right">{qualifiedPct}% delivered</span>
+                  <span className="text-[10px] text-muted-foreground font-medium block text-right">
+                    {qualifiedKpi.formattedPercent} • {qualifiedKpi.statusLabel}
+                  </span>
                 </div>
 
                 {/* KPI 4 */}
@@ -567,16 +644,18 @@ export const ClientPortalView: React.FC = () => {
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-foreground">Discovery Meetings</span>
                     <span className="font-mono font-bold text-foreground">
-                      {metrics.meetingsBooked} / {meetingsTarget}
+                      {meetingsKpi.actual} / {meetingsKpi.target}
                     </span>
                   </div>
                   <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-pink-500 h-full transition-all duration-500"
-                      style={{ width: `${meetingsPct}%` }}
+                      style={{ width: `${meetingsKpi.barWidth}%` }}
                     />
                   </div>
-                  <span className="text-[10px] text-muted-foreground font-medium block text-right">{meetingsPct}% delivered</span>
+                  <span className="text-[10px] text-muted-foreground font-medium block text-right">
+                    {meetingsKpi.formattedPercent} • {meetingsKpi.statusLabel}
+                  </span>
                 </div>
               </div>
             </div>

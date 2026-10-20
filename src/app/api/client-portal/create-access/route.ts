@@ -8,6 +8,7 @@ import {
   registerCredentialHash,
   registerPortalUser,
 } from '@/lib/invitationRegistry';
+import { saveClientToCloud } from '@/lib/firestoreCloudSync';
 import { ClientPortalUser } from '@/types/revrecovery';
 
 /**
@@ -282,6 +283,13 @@ export async function POST(req: NextRequest) {
       targetClient.portalUserIds.push(portalUser.id);
     }
     registerClient(targetClient, company);
+
+    // Persist to shared Cloud Firestore
+    try {
+      await saveClientToCloud(targetClient, company);
+    } catch (fsErr) {
+      console.warn('Cloud sync save notice on create-access:', fsErr);
+    }
 
     // 6. Generate Portal URL
     const origin = req.nextUrl?.origin || 'https://worknest-seven-rosy.vercel.app';

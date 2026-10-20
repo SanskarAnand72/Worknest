@@ -12,6 +12,7 @@ import {
   registerPortalUser,
   verifyCredentialHash,
 } from '@/lib/invitationRegistry';
+import { getClientFromCloud } from '@/lib/firestoreCloudSync';
 
 /**
  * Helper to authenticate returning user via portal password hash or Firebase Auth Identity Toolkit REST API
@@ -507,31 +508,51 @@ export async function POST(req: NextRequest) {
     };
     registerPortalUser(updatedUser);
 
-    if (client.portalAccessStatus === 'Invitation Pending' || client.portalAccessStatus === 'Not Invited') {
-      client.portalAccessStatus = 'Active';
-      registerClient(client, company);
+    // 4. Fetch latest persisted client and company from Cloud Firestore if available
+    let effectiveClient = client;
+    let effectiveCompany = company;
+    try {
+      const cloudData = await getClientFromCloud(client.id);
+      if (cloudData.client) {
+        effectiveClient = {
+          ...effectiveClient,
+          ...cloudData.client,
+          operationalMetrics: cloudData.client.operationalMetrics || effectiveClient.operationalMetrics,
+          portalSettings: cloudData.client.portalSettings || effectiveClient.portalSettings,
+        };
+      }
+      if (cloudData.company) {
+        effectiveCompany = { ...(effectiveCompany || {}), ...cloudData.company } as any;
+      }
+    } catch (cloudErr) {
+      console.warn('Cloud sync read notice on login:', cloudErr);
     }
 
-    // 4. Strictly sanitize operational metrics: omit internalNotes
+    if (effectiveClient.portalAccessStatus === 'Invitation Pending' || effectiveClient.portalAccessStatus === 'Not Invited') {
+      effectiveClient.portalAccessStatus = 'Active';
+      registerClient(effectiveClient, effectiveCompany);
+    }
+
+    // 5. Strictly sanitize operational metrics: omit internalNotes
     let sanitizedMetrics = undefined;
-    if (client.operationalMetrics) {
+    if (effectiveClient.operationalMetrics) {
       sanitizedMetrics = {
-        id: client.operationalMetrics.id,
-        clientId: client.operationalMetrics.clientId,
-        reportingPeriod: client.operationalMetrics.reportingPeriod,
-        campaignStatus: client.operationalMetrics.campaignStatus,
-        targetAccounts: client.operationalMetrics.targetAccounts,
-        contactsReached: client.operationalMetrics.contactsReached,
-        totalReplies: client.operationalMetrics.totalReplies,
-        positiveReplies: client.operationalMetrics.positiveReplies,
-        qualifiedProspects: client.operationalMetrics.qualifiedProspects,
-        meetingsBooked: client.operationalMetrics.meetingsBooked,
-        meetingsCompleted: client.operationalMetrics.meetingsCompleted,
-        dealsClosed: client.operationalMetrics.dealsClosed,
-        revenueGenerated: client.operationalMetrics.revenueGenerated,
-        updatedBy: client.operationalMetrics.updatedBy,
-        updatedAt: client.operationalMetrics.updatedAt,
-        createdAt: client.operationalMetrics.createdAt,
+        id: effectiveClient.operationalMetrics.id,
+        clientId: effectiveClient.operationalMetrics.clientId,
+        reportingPeriod: effectiveClient.operationalMetrics.reportingPeriod,
+        campaignStatus: effectiveClient.operationalMetrics.campaignStatus,
+        targetAccounts: effectiveClient.operationalMetrics.targetAccounts,
+        contactsReached: effectiveClient.operationalMetrics.contactsReached,
+        totalReplies: effectiveClient.operationalMetrics.totalReplies,
+        positiveReplies: effectiveClient.operationalMetrics.positiveReplies,
+        qualifiedProspects: effectiveClient.operationalMetrics.qualifiedProspects,
+        meetingsBooked: effectiveClient.operationalMetrics.meetingsBooked,
+        meetingsCompleted: effectiveClient.operationalMetrics.meetingsCompleted,
+        dealsClosed: effectiveClient.operationalMetrics.dealsClosed,
+        revenueGenerated: effectiveClient.operationalMetrics.revenueGenerated,
+        updatedBy: effectiveClient.operationalMetrics.updatedBy,
+        updatedAt: effectiveClient.operationalMetrics.updatedAt,
+        createdAt: effectiveClient.operationalMetrics.createdAt,
       };
     }
 
@@ -542,26 +563,26 @@ export async function POST(req: NextRequest) {
         email: updatedUser.email,
         name: updatedUser.name,
         clientId: updatedUser.clientId,
-        clientName: updatedUser.clientName || company?.name || 'Client',
+        clientName: updatedUser.clientName || effectiveCompany?.name || 'Client',
         role: updatedUser.role,
         status: updatedUser.status,
         lastLoginAt: updatedUser.lastLoginAt,
       },
       client: {
-        id: client.id,
-        companyId: client.companyId,
-        servicesPurchased: client.servicesPurchased,
-        contractStatus: client.contractStatus,
-        portalAccessStatus: client.portalAccessStatus,
-        portalSettings: client.portalSettings,
+        id: effectiveClient.id,
+        companyId: effectiveClient.companyId,
+        servicesPurchased: effectiveClient.servicesPurchased,
+        contractStatus: effectiveClient.contractStatus,
+        portalAccessStatus: effectiveClient.portalAccessStatus,
+        portalSettings: effectiveClient.portalSettings,
         operationalMetrics: sanitizedMetrics,
       },
-      company: company
+      company: effectiveCompany
         ? {
-            id: company.id,
-            name: company.name,
-            website: company.website,
-            industry: company.industry,
+            id: effectiveCompany.id,
+            name: effectiveCompany.name,
+            website: effectiveCompany.website,
+            industry: effectiveCompany.industry,
           }
         : null,
     });

@@ -53,6 +53,34 @@ export default function ClientPortalDashboardPage() {
               }
               hydrateClientPortalSession(session);
               restored = true;
+
+              // Immediately fetch latest authorized cloud data from shared Cloud Firestore
+              const syncEmail = session.user.email || '';
+              fetch(`/api/client-portal/sync?clientId=${encodeURIComponent(session.clientId)}&email=${encodeURIComponent(syncEmail)}`)
+                .then((r) => r.json())
+                .then((cloudData) => {
+                  if (cloudData.success && cloudData.client) {
+                    hydrateClientPortalSession({
+                      clientId: session.clientId,
+                      user: session.user,
+                      client: cloudData.client,
+                      company: cloudData.company || session.company,
+                    });
+                    localStorage.setItem(
+                      'revrecovery_portal_session',
+                      JSON.stringify({
+                        user: session.user,
+                        clientId: session.clientId,
+                        client: cloudData.client,
+                        company: cloudData.company || session.company,
+                        timestamp: Date.now(),
+                      })
+                    );
+                  }
+                })
+                .catch((syncErr) => {
+                  console.warn('[CloudSync] Dashboard background refresh notice:', syncErr);
+                });
             }
           } catch (e) {
             console.warn('Failed to parse portal session from storage:', e);

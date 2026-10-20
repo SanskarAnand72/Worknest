@@ -143,6 +143,7 @@ interface RevRecoveryState {
     client?: Client | null;
     company?: Company | null;
   }) => void;
+  fetchClientPortalDataFromCloud: (clientId: string, email?: string) => Promise<any>;
   inviteClientPortalUser: (clientId: string, data: { email: string; name: string; role?: ClientRole }) => Promise<{ user: ClientPortalUser; inviteLink: string }>;
   resendClientPortalInvitation: (id: string) => Promise<{ inviteLink: string }>;
   updateClientPortalUserRole: (id: string, role: ClientRole) => Promise<void>;
@@ -431,6 +432,30 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
         set({ companies: [...existingCompanies, company] });
       }
     }
+  },
+
+  fetchClientPortalDataFromCloud: async (clientId: string, email?: string) => {
+    if (!clientId) return null;
+    const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined' && !(typeof process !== 'undefined' && process.env.VITEST);
+    if (!isBrowser) return null;
+    try {
+      const url = `/api/client-portal/sync?clientId=${encodeURIComponent(clientId)}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.client) {
+          get().hydrateClientPortalSession({
+            clientId,
+            client: data.client,
+            company: data.company,
+          });
+          return data;
+        }
+      }
+    } catch (err) {
+      console.warn('[CloudSync] Notice checking cloud updates:', err);
+    }
+    return null;
   },
 
   // Company Actions
@@ -834,6 +859,37 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     };
 
     await get().updateClient(clientId, { operationalMetrics: updatedMetrics });
+
+    // Explicitly verify and sync operational metrics to Cloud Firestore
+    const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined' && !(typeof process !== 'undefined' && process.env.VITEST);
+    if (isBrowser) {
+      const targetClient = get().clients.find((c) => c.id === clientId);
+      const targetCompany = targetClient
+        ? get().companies.find((comp) => comp.id === targetClient.companyId)
+        : undefined;
+
+      try {
+        const syncRes = await fetch('/api/client-portal/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'saveOperationalMetrics',
+            clientId,
+            client: targetClient,
+            company: targetCompany,
+            metrics: updatedMetrics,
+          }),
+        });
+
+        if (!syncRes.ok) {
+          const errData = await syncRes.json().catch(() => ({}));
+          throw new Error(errData.error || 'Failed to persist operational metrics to Cloud Firestore.');
+        }
+      } catch (cloudErr) {
+        console.error('[CloudSync] Operational metrics cloud save error:', cloudErr);
+        throw cloudErr;
+      }
+    }
   },
 
   updateClient: async (id, updates) => {
@@ -842,7 +898,29 @@ export const useRevRecoveryStore = create<RevRecoveryState>((set, get) => ({
     );
     set({ clients: updated });
     const target = updated.find((c) => c.id === id);
-    if (target) await saveEntityToRevDB('clients', target);
+    if (target) {
+      await saveEntityToRevDB('clients', target);
+
+      // Persist client and company to Cloud Firestore via synchronization API
+      const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined' && !(typeof process !== 'undefined' && process.env.VITEST);
+      if (isBrowser) {
+        try {
+          const company = get().companies.find((comp) => comp.id === target.companyId);
+          await fetch('/api/client-portal/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'saveClient',
+              clientId: target.id,
+              client: target,
+              company,
+            }),
+          });
+        } catch (syncErr) {
+          console.warn('[CloudSync] Sync notice in updateClient:', syncErr);
+        }
+      }
+    }
   },
 
   archiveClient: async (id) => {
